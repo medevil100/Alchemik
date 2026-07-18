@@ -11,6 +11,11 @@ from .ai_signal import AISignal
 from .final_analysis_result import FinalAnalysisResult
 from .risk_result import RiskResult
 from .hunter_result import HunterResult
+from .event_enums import InstrumentType, EventFamily, PriorityLevel, EventOwner
+from .history_entry import HistoryEntry
+from .price_data import PriceData
+from .volume_data import VolumeData
+from .market_event import MarketEvent, CURRENT_SCHEMA_VERSION
 
 __all__ = [
     'AnalysisResult',
@@ -20,5 +25,16 @@ __all__ = [
     'MarketData',
     'NewsItem',
     'AISignal',
-    'FinalAnalysisResult'
+    'FinalAnalysisResult',
+    'RiskResult',
+    'HunterResult',
+    'InstrumentType',
+    'EventFamily',
+    'PriorityLevel',
+    'EventOwner',
+    'HistoryEntry',
+    'PriceData',
+    'VolumeData',
+    'MarketEvent',
+    'CURRENT_SCHEMA_VERSION',
 ]
