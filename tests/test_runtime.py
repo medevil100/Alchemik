@@ -5,6 +5,7 @@ from datetime import datetime
 from application.runtime import RuntimeService
 from application.models import CycleReport, CandidateError
 from data.models.final_analysis_result import FinalAnalysisResult
+from data.models import MarketEvent, InstrumentType
 from application.market_scanner import MarketScanner
 
 class TestRuntimeService(unittest.TestCase):
@@ -362,7 +363,9 @@ class TestRuntimeService(unittest.TestCase):
         report = self.runtime.run_cycle({})
         self.assertEqual(report.candidates_count, 1)
         self.assertEqual(report.success_count, 1)
-        self.assertEqual(report.error_count, 0)
+        # Error is now properly logged and counted (not silently swallowed)
+        self.assertEqual(report.error_count, 1)
+        self.assertEqual(report.errors[0].stage, "HistoryRepository")
 
     def test_deduplicator_skips_duplicates(self):
         """Test that duplicates are skipped and don't reach MasterEngine."""
@@ -416,9 +419,12 @@ class TestRuntimeService(unittest.TestCase):
         self.mock_master.run_analysis.return_value = mock_result
         
         report = runtime.run_cycle({})
-        
+
         mock_deduplicator.should_process.assert_called_once_with("A")
-        self.mock_master.run_analysis.assert_called_once_with("A")
+        self.mock_master.run_analysis.assert_called_once()
+        # Verify the first positional arg is "A"
+        args, kwargs = self.mock_master.run_analysis.call_args
+        self.assertEqual(args[0], "A")
         mock_deduplicator.mark_processed.assert_called_once_with("A")
         self.assertEqual(report.candidates_count, 1)
         self.assertEqual(report.success_count, 1)
@@ -765,7 +771,10 @@ class TestRuntimeService(unittest.TestCase):
         report = runtime.run_cycle({})
         
         self.assertEqual(mock_deduplicator.should_process.call_count, 2)
-        self.mock_master.run_analysis.assert_called_once_with("B")
+        self.mock_master.run_analysis.assert_called_once()
+        # Verify the first positional arg is "B"
+        args, kwargs = self.mock_master.run_analysis.call_args
+        self.assertEqual(args[0], "B")
         mock_deduplicator.mark_processed.assert_called_once_with("B")
         self.assertEqual(report.candidates_count, 2)
         self.assertEqual(report.success_count, 1)
@@ -782,6 +791,285 @@ class TestRuntimeService(unittest.TestCase):
             )
             
             mock_deduplicator_class.assert_not_called()  # Should be passed as instance, not created
+
+    # ------------------------------------------------------------------
+    # NEW TESTS: Instrument metadata resolution and MarketEvent flow
+    # ------------------------------------------------------------------
+
+    def test_runtime_resolves_instrument_metadata(self):
+        """Test that RuntimeService resolves market and instrument_type from metadata."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # Verify MasterEngine was called with correct metadata
+        self.mock_master.run_analysis.assert_called_once()
+        args, kwargs = self.mock_master.run_analysis.call_args
+        self.assertEqual(args[0], "TEST")
+        self.assertEqual(kwargs["market"], "NYSE")
+        self.assertEqual(kwargs["instrument_type"], InstrumentType.STOCK_USA)
+
+    def test_runtime_passes_gpw_metadata(self):
+        """Test that RuntimeService passes GPW metadata correctly."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "XYZ.WA": ("GPW", InstrumentType.STOCK_GPW),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="XYZ.WA")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="XYZ.WA",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        self.mock_master.run_analysis.assert_called_once()
+        args, kwargs = self.mock_master.run_analysis.call_args
+        self.assertEqual(args[0], "XYZ.WA")
+        self.assertEqual(kwargs["market"], "GPW")
+        self.assertEqual(kwargs["instrument_type"], InstrumentType.STOCK_GPW)
+
+    def test_runtime_collects_market_events(self):
+        """Test that RuntimeService collects MarketEvents via events_out list."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # Verify events_out was passed to MasterEngine
+        self.mock_master.run_analysis.assert_called_once()
+        args, kwargs = self.mock_master.run_analysis.call_args
+        self.assertIn("events_out", kwargs)
+        self.assertIsInstance(kwargs["events_out"], list)
+
+    def test_detectors_not_run_twice(self):
+        """Test that detectors are NOT run a second time by RuntimeService."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # MasterEngine.run_analysis is called exactly once per candidate
+        self.mock_master.run_analysis.assert_called_once()
+        # RuntimeService does NOT call detectors directly
+        self.assertFalse(hasattr(runtime, 'price_detector'))
+        self.assertFalse(hasattr(runtime, 'volume_detector'))
+
+    def test_market_events_not_in_old_pipeline(self):
+        """Test that MarketEvents do NOT reach old pipeline engines."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        mock_alert_builder = MagicMock()
+        mock_alert_dispatcher = MagicMock()
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            alert_builder=mock_alert_builder,
+            alert_dispatcher=mock_alert_dispatcher,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # Alert pipeline receives FinalAnalysisResult, NOT MarketEvent
+        mock_alert_builder.should_alert.assert_called_once_with(mock_result)
+        # Verify the alert builder did NOT receive MarketEvent
+        call_args = mock_alert_builder.should_alert.call_args
+        self.assertIsInstance(call_args[0][0], FinalAnalysisResult)
+        self.assertNotIsInstance(call_args[0][0], MarketEvent)
+
+    def test_no_self_last_events(self):
+        """Test that RuntimeService does NOT store self.last_events."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # Verify no self.last_events attribute exists
+        self.assertFalse(hasattr(runtime, 'last_events'))
+
+    def test_cycle_result_not_tuple(self):
+        """Test that run_cycle still returns CycleReport, not a tuple."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            instrument_metadata={
+                "TEST": ("NYSE", InstrumentType.STOCK_USA),
+            }
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TEST")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        mock_result = FinalAnalysisResult(
+            symbol="TEST",
+            final_rating=80,
+            confidence_level=90,
+            recommendation="Buy",
+            positive_factors=[],
+            risk_factors=[],
+            warnings=[],
+            summary="",
+            generated_at=datetime.now()
+        )
+        self.mock_master.run_analysis.return_value = mock_result
+
+        report = runtime.run_cycle({})
+
+        # Verify return type is still CycleReport
+        self.assertIsInstance(report, CycleReport)
+        # Verify it's not a tuple
+        self.assertNotIsInstance(report, tuple)
 
 if __name__ == "__main__":
     unittest.main()
