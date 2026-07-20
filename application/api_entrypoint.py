@@ -20,6 +20,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 
 from application.read_service import RuntimeReadService
+from application.dashboard_read_service import DashboardReadService
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,20 @@ def get_read_service() -> RuntimeReadService:
 
 
 _read_service: Optional[RuntimeReadService] = None
+
+# ------------------------------------------------------------------
+# Dependency: dashboard service
+# ------------------------------------------------------------------
+
+def get_dashboard_service() -> DashboardReadService:
+    """Create or get the DashboardReadService instance."""
+    global _dashboard_service
+    if _dashboard_service is None:
+        _dashboard_service = DashboardReadService(db_path=_get_db_path())
+    return _dashboard_service
+
+
+_dashboard_service: Optional[DashboardReadService] = None
 
 # ------------------------------------------------------------------
 # Pagination helpers
@@ -154,6 +169,37 @@ async def get_cycle(cycle_id: str):
     if cycle is None:
         raise HTTPException(status_code=404, detail=f"Cycle '{cycle_id}' not found")
     return cycle
+
+
+@app.get("/api/v1/dashboard")
+async def get_dashboard(
+    latest_events_limit: int = Query(10, ge=1, le=50, description="Max recent events (1-50)"),
+    top_tickers_limit: int = Query(10, ge=1, le=50, description="Max top tickers (1-50)"),
+    activity_hours: int = Query(24, ge=1, le=168, description="Hours window for aggregations (1-168)"),
+):
+    """
+    Dashboard summary — aggregated read-only data for the main dashboard screen.
+
+    Returns pre-aggregated data from SQLite. Does NOT start engines or generate events.
+    All aggregations are performed in SQLite, not by loading full tables into Python.
+
+    **Sections**:
+    - `generated_at`: ISO 8601 timestamp of response generation.
+    - `system`: API status, database availability, journal_mode, schema_version.
+    - `runtime`: cycle_count, event_count, last_cycle summary, is_empty flag.
+    - `recent_activity`: events_in_last_cycle, events_last_24h, unique_tickers, last_event_at.
+    - `top_tickers`: most active tickers with event_count, last_event_at, priority_final.
+    - `event_breakdown`: by_event_family, by_event_type, by_priority.
+    - `latest_events`: most recent MarketEvents (limited).
+
+    **Empty database**: returns HTTP 200 with is_empty: true, all counters at 0, lists empty.
+    """
+    service = get_dashboard_service()
+    return service.get_dashboard_summary(
+        latest_events_limit=latest_events_limit,
+        top_tickers_limit=top_tickers_limit,
+        activity_hours=activity_hours,
+    )
 
 
 @app.get("/api/v1/market-events")

@@ -179,6 +179,146 @@ Returns a single MarketEvent by its UUID.
 - 200: Event found
 - 404: Event not found
 
+### Dashboard
+
+**`GET /api/v1/dashboard`**
+
+Returns a pre-aggregated dashboard summary — a single JSON document designed for the main screen of a future frontend. All aggregations are performed in SQLite, not by loading full tables into Python.
+
+**Important**: This endpoint is READ-ONLY. It does not start RuntimeService, MasterEngine, or any detectors. It does not write to the database.
+
+| Parameter | Type | Default | Min | Max | Description |
+|-----------|------|---------|-----|-----|-------------|
+| `latest_events_limit` | int | 10 | 1 | 50 | Max recent events to include |
+| `top_tickers_limit` | int | 10 | 1 | 50 | Max top tickers to include |
+| `activity_hours` | int | 24 | 1 | 168 | Hours window for aggregations |
+
+#### Response Sections
+
+- **`generated_at`** (string): ISO 8601 timestamp of response generation.
+- **`system`** (object): API status, database availability, journal_mode, schema_version.
+- **`runtime`** (object): cycle_count, event_count, last_cycle summary, is_empty flag.
+- **`recent_activity`** (object): events_in_last_cycle, events_last_24h, unique_tickers, last_event_at.
+- **`top_tickers`** (array): Most active tickers with event_count, last_event_at, priority_final.
+- **`event_breakdown`** (object): by_event_family, by_event_type, by_priority (each an array of {key, count}).
+- **`latest_events`** (array): Most recent MarketEvents with event_id, timestamp_utc, ticker, event_family, event_type, priority_final, confidence_level.
+
+#### Example Response
+
+```json
+{
+  "generated_at": "2026-07-20T18:30:00+00:00",
+  "system": {
+    "status": "ok",
+    "database": "available",
+    "journal_mode": "wal",
+    "schema_version": 1
+  },
+  "runtime": {
+    "cycle_count": 42,
+    "event_count": 156,
+    "last_cycle": {
+      "cycle_id": "1721490000.0",
+      "execution_time": 12.5,
+      "candidates_count": 15,
+      "success_count": 12,
+      "error_count": 0,
+      "status": "completed",
+      "error_message": null,
+      "created_at": "2026-07-20T18:20:00"
+    },
+    "last_cycle_at": "2026-07-20T18:20:00",
+    "last_cycle_error_count": 0,
+    "is_empty": false
+  },
+  "recent_activity": {
+    "events_in_last_cycle": 4,
+    "events_last_24h": 12,
+    "unique_tickers_last_24h": 7,
+    "last_event_at": "2026-07-20T18:19:10"
+  },
+  "top_tickers": [
+    {
+      "ticker": "XYZ.WA",
+      "event_count": 5,
+      "last_event_at": "2026-07-20T18:19:10",
+      "priority_final": "HIGH"
+    }
+  ],
+  "event_breakdown": {
+    "by_event_family": [
+      {"event_family": "PRICE", "count": 8},
+      {"event_family": "VOLUME", "count": 4}
+    ],
+    "by_event_type": [
+      {"event_type": "PRICE_SURGE", "count": 5},
+      {"event_type": "VOLUME_SPIKE", "count": 3}
+    ],
+    "by_priority": [
+      {"priority": "HIGH", "count": 6},
+      {"priority": "MEDIUM", "count": 4}
+    ]
+  },
+  "latest_events": [
+    {
+      "event_id": "a1b2c3d4-...",
+      "timestamp_utc": "2026-07-20T18:19:10+00:00",
+      "ticker": "XYZ.WA",
+      "market": "GPW",
+      "event_family": "PRICE",
+      "event_type": "PRICE_SURGE",
+      "priority_final": "CRITICAL",
+      "confidence_level": 0.85
+    }
+  ]
+}
+```
+
+#### Empty Database Behavior
+
+When the database is empty, the endpoint still returns HTTP 200 with a valid structure:
+
+```json
+{
+  "generated_at": "2026-07-20T18:30:00+00:00",
+  "system": {
+    "status": "ok",
+    "database": "available",
+    "journal_mode": "wal",
+    "schema_version": 1
+  },
+  "runtime": {
+    "cycle_count": 0,
+    "event_count": 0,
+    "last_cycle": null,
+    "last_cycle_at": null,
+    "last_cycle_error_count": null,
+    "is_empty": true
+  },
+  "recent_activity": {
+    "events_in_last_cycle": 0,
+    "events_last_24h": 0,
+    "unique_tickers_last_24h": 0,
+    "last_event_at": null
+  },
+  "top_tickers": [],
+  "event_breakdown": {
+    "by_event_family": [],
+    "by_event_type": [],
+    "by_priority": []
+  },
+  "latest_events": []
+}
+```
+
+#### Error Responses
+
+| Status | Meaning |
+|--------|---------|
+| 422 | Invalid parameters (limit > 50, activity_hours > 168, negative values) |
+| 503 | Database unavailable |
+| 500 | Internal server error (no stack traces exposed) |
+
 ### Ticker MarketEvents
 
 **`GET /api/v1/tickers/{ticker}/market-events`**

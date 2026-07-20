@@ -1,7 +1,7 @@
 import sqlite3
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from config import RuntimeConfig
@@ -144,7 +144,7 @@ class SQLiteHistoryRepository:
         else:
             report_json = json.dumps(report, default=str, indent=2)
 
-        created_at = datetime.now().isoformat()
+        created_at = datetime.now(timezone.utc).isoformat()
         status = cycle_data.get("status", "completed")
         error_message = cycle_data.get("error_message")
 
@@ -327,7 +327,7 @@ class SQLiteHistoryRepository:
                         (as returned by MarketEvent.to_dict()).
         """
         event_json = json.dumps(event_data, default=str, indent=2)
-        created_at = datetime.now().isoformat()
+        created_at = datetime.now(timezone.utc).isoformat()
 
         conn = sqlite3.connect(str(self.db_path))
         try:
@@ -380,7 +380,7 @@ class SQLiteHistoryRepository:
         if not events_data:
             return
 
-        created_at = datetime.now().isoformat()
+        created_at = datetime.now(timezone.utc).isoformat()
 
         conn = sqlite3.connect(str(self.db_path))
         try:
@@ -668,6 +668,315 @@ class SQLiteHistoryRepository:
             conn.close()
 
     # ------------------------------------------------------------------
+    # Dashboard aggregation queries
+    # ------------------------------------------------------------------
+
+    def _suffix_hours(self, hours: int) -> str:
+        """
+        Return a SQLite time modifier string for the given number of hours.
+
+        Args:
+            hours: Number of hours (may be negative for future times).
+
+        Returns:
+            String like '-24 hours' or '1 hours' that SQLite datetime() understands.
+        """
+        if hours >= 0:
+            return f"-{hours} hours"
+        else:
+            return f"{abs(hours)} hours"
+
+    def count_market_events_since(self, hours: int) -> int:
+        """
+        Count MarketEvents created within the last N hours.
+
+        Uses datetime(created_at) to normalize timestamps regardless of
+        ISO 8601 format variations (T separator, +00:00 offset, microseconds).
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            Count of market events since the given time.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM market_events
+                WHERE datetime(created_at) >= datetime('now', ?)
+                """,
+                (self._suffix_hours(hours),),
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def count_unique_tickers_since(self, hours: int) -> int:
+        """
+        Count unique tickers that have events within the last N hours.
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            Count of unique tickers.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT ticker) FROM market_events
+                WHERE datetime(created_at) >= datetime('now', ?)
+                """,
+                (self._suffix_hours(hours),),
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def get_last_market_event_time(self) -> Optional[str]:
+        """
+        Get the timestamp of the most recent MarketEvent.
+
+        Returns:
+            ISO 8601 datetime string or None if no events exist.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT created_at FROM market_events
+                ORDER BY datetime(created_at) DESC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def count_events_for_latest_cycle(self) -> int:
+        """
+        Count the number of MarketEvents for the most recent cycle.
+
+        Uses datetime(created_at) for comparison with fallback to rowid for
+        deterministic ordering when timestamps are identical.
+
+        Returns:
+            Count of events in the latest cycle, or 0 if no cycles exist.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM market_events
+                WHERE cycle_id = (
+                    SELECT cycle_id FROM cycles
+                    ORDER BY datetime(created_at) DESC, rowid DESC
+                    LIMIT 1
+                )
+                """
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def count_events_for_cycle(self, cycle_id: str) -> int:
+        """
+        Count the number of MarketEvents for a specific cycle.
+
+        Args:
+            cycle_id: The cycle identifier.
+
+        Returns:
+            Count of events for that cycle.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM market_events
+                WHERE cycle_id = ?
+                """,
+                (cycle_id,),
+            )
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def get_top_tickers_since(
+        self, limit: int, hours: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Get the most active tickers within the last N hours.
+
+        Priority_final is taken from the most recent event for each ticker
+        (determined by datetime(created_at) within the group), ensuring a
+        deterministic and semantically meaningful value.
+
+        Tie-breaker: for events with identical created_at, the last inserted
+        record (highest id) wins.
+
+        Args:
+            limit: Maximum number of tickers to return.
+            hours: Number of hours to look back.
+
+        Returns:
+            List of dicts with ticker, event_count, last_event_at, priority_final.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    m.ticker,
+                    m.event_count,
+                    m.last_event_at,
+                    COALESCE(
+                        (SELECT me.priority_final
+                         FROM market_events me
+                         WHERE me.ticker = m.ticker
+                           AND datetime(me.created_at) >= datetime('now', ?)
+                         ORDER BY datetime(me.created_at) DESC, me.id DESC
+                         LIMIT 1),
+                        ''
+                    ) AS priority_final
+                FROM (
+                    SELECT
+                        ticker,
+                        COUNT(*) AS event_count,
+                        datetime(MAX(created_at)) AS last_event_at
+                    FROM market_events
+                    WHERE datetime(created_at) >= datetime('now', ?)
+                    GROUP BY ticker
+                ) m
+                ORDER BY m.event_count DESC, m.last_event_at DESC
+                LIMIT ?
+                """,
+                (self._suffix_hours(hours), self._suffix_hours(hours), limit),
+            )
+            return [
+                {
+                    "ticker": row[0],
+                    "event_count": row[1],
+                    "last_event_at": row[2],
+                    "priority_final": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_event_family_breakdown_since(
+        self, hours: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Aggregate event counts by event_family within the last N hours.
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            List of dicts with event_family and count.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    event_family,
+                    COUNT(*) AS count
+                FROM market_events
+                WHERE datetime(created_at) >= datetime('now', ?)
+                GROUP BY event_family
+                ORDER BY count DESC
+                """,
+                (self._suffix_hours(hours),),
+            )
+            return [
+                {"event_family": row[0], "count": row[1]}
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_event_type_breakdown_since(
+        self, hours: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Aggregate event counts by event_type within the last N hours.
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            List of dicts with event_type and count.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    event_type,
+                    COUNT(*) AS count
+                FROM market_events
+                WHERE datetime(created_at) >= datetime('now', ?)
+                GROUP BY event_type
+                ORDER BY count DESC
+                """,
+                (self._suffix_hours(hours),),
+            )
+            return [
+                {"event_type": row[0], "count": row[1]}
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_priority_breakdown_since(
+        self, hours: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Aggregate event counts by priority_final within the last N hours.
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            List of dicts with priority and count.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    priority_final,
+                    COUNT(*) AS count
+                FROM market_events
+                WHERE datetime(created_at) >= datetime('now', ?)
+                GROUP BY priority_final
+                ORDER BY count DESC
+                """,
+                (self._suffix_hours(hours),),
+            )
+            return [
+                {"priority": row[0], "count": row[1]}
+                for row in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
 
@@ -694,7 +1003,6 @@ class SQLiteHistoryRepository:
             return {
                 "cycle_count": cycle_count,
                 "event_count": event_count,
-                "db_path": str(self.db_path),
                 "journal_mode": journal_mode,
                 "schema_version": self.SCHEMA_VERSION,
             }
