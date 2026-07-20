@@ -48,7 +48,12 @@ class YahooFetcher:
         try:
             ticker = self._ticker_factory(symbol)
             try:
-                history = ticker.history(period="260d")
+                # Request full 52 calendar weeks of daily data.
+                # Using period="1y" with yfinance returns approximately 365 calendar days
+                # (including weekends/holidays), which covers ~260 trading sessions
+                # for a typical liquid instrument. This is the correct way to request
+                # 52 calendar weeks of data.
+                history = ticker.history(period="1y")
             except Exception as e:
                 if "too many requests" in str(e).lower():
                     raise RateLimitExceededError("Yahoo Finance API rate limit exceeded")

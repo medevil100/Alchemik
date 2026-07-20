@@ -116,7 +116,7 @@ class TestYahooFetcher(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].open, 100.0)
-        mock_ticker.history.assert_called_once_with(period="260d")
+        mock_ticker.history.assert_called_once_with(period="1y")
 
 
 if __name__ == "__main__":

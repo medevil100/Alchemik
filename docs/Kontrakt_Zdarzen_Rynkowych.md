@@ -472,7 +472,16 @@ Dodanie danych kontekstowych (news_context, ai_context, tavily_context) nie moż
 
 Sprawdzenie duplikatu (`OpportunityDeduplicator`) następuje przed uruchomieniem kosztownych zasobów (News, Tavily, AI). Duplikaty są archiwizowane, ale nie analizowane.
 
----
+### N13. Sposób wyliczania confidence_level może być różny dla poszczególnych rodzin zdarzeń
+
+Dokumentacja definiuje zakres (0.0–1.0), znaczenie (poziom pewności detekcji) oraz odpowiedzialność za ustawienie (detektor → etap oceny jakości). Nie definiuje natomiast algorytmu wyliczania `confidence_level`.
+
+Sposób wyliczania `confidence_level` może być różny dla poszczególnych rodzin zdarzeń (PRICE, VOLUME, TECHNICAL, FUNDAMENTAL, CORPORATE, REGULATORY, MACRO, ETF, DERIVATIVES, SENTIMENT, SYSTEM), o ile pozostaje zgodny z kontraktem danych:
+- Wartość zawsze w zakresie 0.0–1.0
+- Wyższa wartość oznacza większą pewność
+- Pole nigdy nie może pozostać puste
+- Końcowa korekta przez etap oceny jakości jest dopuszczalna
+
 
 ## 5. HISTORIA ZDARZENIA
 
@@ -987,7 +996,7 @@ Poniższy diagram przedstawia ścieżkę **jednego zdarzenia** od momentu powsta
 - **27 pól** wspólnego obiektu `MarketEvent` — każde z określonym znaczeniem, typem, wymagalnością i odpowiedzialnością za uzupełnienie
 - **13 etapów** cyklu życia zdarzenia — od utworzenia przez detekcję, normalizację, deduplikację, ocenę jakości, wzbogacanie kontekstem (News, Tavily, AI), orkiestrację, decyzję o alercie, wysyłkę, aż po archiwizację
 - **11 modułów** z jasno określoną odpowiedzialnością — co otrzymują, co mogą zmienić, czego nie mogą zmieniać, co przekazują dalej
-- **12 niezmienników** — zasad, które muszą być spełnione zawsze, gwarantujących integralność danych
+- **13 niezmienników** — zasad, które muszą być spełnione zawsze, gwarantujących integralność danych
 - **Mechanizm historii** — chronologiczne śledzenie każdej modyfikacji obiektu
 - **System wersjonowania** — umożliwiający przyszłą rozbudowę bez naruszania kompatybilności
 

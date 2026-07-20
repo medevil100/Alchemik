@@ -1,0 +1,23 @@
+# ALCHEMIK — STAŁE ZASADY PRACY CLINE
+
+Projekt posiada zamrożoną architekturę.
+
+Przed wykonaniem jakiejkolwiek zmiany:
+
+1. Najpierw przeanalizuj problem oraz wszystkie wymagane zależności.
+2. Dopiero po zakończeniu analizy rozpocznij implementację.
+3. Nie zmieniaj architektury projektu bez wyraźnej decyzji właściciela projektu.
+4. Nie zmieniaj Public API.
+5. Nie przebudowuj istniejących modułów, jeżeli rozwiązanie można zrealizować przez dodanie nowych komponentów.
+6. Czytaj wyłącznie pliki potrzebne do wykonania bieżącego zadania.
+7. Nie wykonuj pełnego skanowania repozytorium bez rzeczywistej potrzeby.
+8. W pierwszej kolejności wykorzystuj istniejące modele danych, kontrakty, interfejsy i dokumentację.
+9. Nie zgaduj brakujących założeń. Jeżeli dokumentacja czegoś nie definiuje, przerwij implementację tego elementu i opisz problem w raporcie końcowym.
+10. Każde zadanie zakończ:
+   - uruchomieniem odpowiednich testów,
+   - uruchomieniem pełnego zestawu testów projektu,
+   - przygotowaniem raportu końcowego,
+   - potwierdzeniem gotowości do osobnego commita Git.
+11. Jeżeli do wykonania zadania nie jest potrzebny cały projekt, nie analizuj całego repozytorium. Korzystaj wyłącznie z plików bezpośrednio związanych z bieżącym zadaniem oraz ich zależności.
+12. Szanuj zamrożoną architekturę projektu. Wprowadzaj wyłącznie zmiany wymagane przez aktualne zadanie. Nie wykonuj dodatkowych refaktoryzacji ani zmian „przy okazji".
+13. Każdą decyzję implementacyjną opieraj na obowiązującej dokumentacji projektu. W przypadku sprzeczności dokumentacja ma pierwszeństwo przed własnymi założeniami.

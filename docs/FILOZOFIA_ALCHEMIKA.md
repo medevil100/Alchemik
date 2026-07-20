@@ -51,6 +51,68 @@ Ostateczna decyzja inwestycyjna zawsze należy do inwestora.
 ## Podsumowanie filozofii projektu
 ALCHEMIK nie jest botem inwestycyjnym, lecz inteligentnym szperaczem giełdowym, który dostarcza informacje, ale nie podejmuje decyzji.
 
+## Status systemu
+ALCHEMIK jest systemem wspomagania decyzji inwestycyjnych.
+
+ALCHEMIK NIE podejmuje decyzji za inwestora.
+
+System NIE wydaje rekomendacji:
+- BUY
+- SELL
+
+System przedstawia kompletny obraz sytuacji.
+
+Końcowa decyzja zawsze należy do użytkownika.
+
+## Pytania, na które odpowiada ALCHEMIK
+ALCHEMIK odpowiada na pytania:
+- Co się dzieje?
+- Dlaczego się dzieje?
+- Czy podobna sytuacja występowała wcześniej?
+- Jak zakończyły się podobne sytuacje?
+- Czy istnieją nowe informacje?
+- Jakie scenariusze są najbardziej prawdopodobne?
+
+ALCHEMIK NIE odpowiada automatycznie:
+"Kup"
+lub
+"Sprzedaj"
+
+## Wczesne wykrywanie zmian
+Zadaniem ALCHEMIKA jest jak najwcześniejsze wykrycie zmian zachodzących na rynku.
+
+Największą wartość posiadają sygnały pojawiające się we wczesnej fazie ruchu.
+
+System nie jest projektowany pod wykrywanie wyłącznie ekstremalnych zmian.
+
+## Łączna analiza ceny i wolumenu
+Cena i wolumen są analizowane łącznie.
+
+Żaden z tych parametrów samodzielnie nie stanowi pełnej podstawy oceny sytuacji.
+
+Interpretacja zawsze odbywa się z uwzględnieniem kontekstu.
+
+## Indywidualna charakterystyka instrumentu
+Każdy instrument posiada własną charakterystykę.
+
+ALCHEMIK nie powinien opierać się wyłącznie na sztywnych progach wspólnych dla wszystkich spółek.
+
+W przyszłości system powinien wykorzystywać historię zachowania konkretnego instrumentu.
+
+## Minimalizacja czasu analizy
+Rolą ALCHEMIKA jest możliwie maksymalne skrócenie czasu potrzebnego inwestorowi do zebrania informacji.
+
+System powinien automatycznie prezentować między innymi:
+- analizę ceny,
+- analizę wolumenu,
+- analizę techniczną,
+- historię podobnych zdarzeń,
+- wybicia ważnych poziomów,
+- informacje fundamentalne,
+- wiadomości,
+- ocenę AI,
+- możliwe scenariusze rozwoju sytuacji.
+
 ## Przepływ logiczny
 1. Monitoring rynku 24/7
 2. Wykrycie nietypowego zdarzenia
