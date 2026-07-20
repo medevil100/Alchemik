@@ -238,6 +238,54 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
         latest = self.repo.get_latest_market_events(limit=3)
         self.assertLessEqual(len(latest), 3)
 
+    def test_latest_market_events_with_offset(self):
+        """Test that get_latest_market_events respects offset."""
+        events = [
+            self._make_sample_market_event(f"TICK{i}", "EVENT")
+            for i in range(5)
+        ]
+        events_data = [ev.to_dict() for ev in events]
+        self.repo.save_market_events(self.cycle_id, events_data)
+
+        all_events = self.repo.get_latest_market_events(limit=10, offset=0)
+        self.assertEqual(len(all_events), 5)
+
+        some_events = self.repo.get_latest_market_events(limit=10, offset=2)
+        self.assertEqual(len(some_events), 3)
+
+        no_events = self.repo.get_latest_market_events(limit=10, offset=10)
+        self.assertEqual(len(no_events), 0)
+
+    def test_get_market_event_by_id(self):
+        """Test retrieving a single MarketEvent by event_id."""
+        event = self._make_sample_market_event("TICK_X", "EVENT_ID_TEST")
+        self.repo.save_market_event(self.cycle_id, event.to_dict())
+
+        retrieved = self.repo.get_market_event_by_id(event.event_id)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved["event_id"], event.event_id)
+
+    def test_get_market_event_by_id_not_found(self):
+        """Test that get_market_event_by_id returns None for non-existent ID."""
+        result = self.repo.get_market_event_by_id("nonexistent_event_id")
+        self.assertIsNone(result)
+
+    def test_get_market_events_by_ticker_with_offset(self):
+        """Test retrieving MarketEvents by ticker with offset."""
+        events = [
+            self._make_sample_market_event("TICK_A", "EVENT_1"),
+            self._make_sample_market_event("TICK_A", "EVENT_2"),
+            self._make_sample_market_event("TICK_A", "EVENT_3"),
+        ]
+        events_data = [ev.to_dict() for ev in events]
+        self.repo.save_market_events(self.cycle_id, events_data)
+
+        all_events = self.repo.get_market_events_by_ticker("TICK_A", limit=10, offset=0)
+        self.assertEqual(len(all_events), 3)
+
+        some_events = self.repo.get_market_events_by_ticker("TICK_A", limit=10, offset=1)
+        self.assertEqual(len(some_events), 2)
+
     def test_market_events_empty_cycle(self):
         """Test that non-existent cycle returns empty list."""
         events = self.repo.get_market_events_for_cycle("nonexistent")
@@ -267,6 +315,20 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
         self.assertEqual(summaries[0]["cycle_id"], self.cycle_id)
         self.assertIn("execution_time", summaries[0])
         self.assertNotIn("report_json", summaries[0])
+
+    def test_list_cycle_summaries_with_offset(self):
+        """Test that list_cycle_summaries respects offset."""
+        for i in range(5):
+            self.repo.save_cycle(f"cycle_{i}", self.cycle_data)
+
+        all_summaries = self.repo.list_cycle_summaries(limit=10, offset=0)
+        self.assertEqual(len(all_summaries), 5)
+
+        some_summaries = self.repo.list_cycle_summaries(limit=10, offset=3)
+        self.assertEqual(len(some_summaries), 2)
+
+        no_summaries = self.repo.list_cycle_summaries(limit=10, offset=10)
+        self.assertEqual(len(no_summaries), 0)
 
     # ------------------------------------------------------------------
     # NEW: Storage summary

@@ -239,12 +239,13 @@ class SQLiteHistoryRepository:
         finally:
             conn.close()
 
-    def list_cycle_summaries(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def list_cycle_summaries(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """
         Return recent cycle summaries (no full report JSON).
 
         Args:
             limit: Maximum number of summaries.
+            offset: Number of records to skip.
 
         Returns:
             List of dicts with cycle metadata.
@@ -261,8 +262,9 @@ class SQLiteHistoryRepository:
                 FROM cycles
                 ORDER BY created_at DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             )
             return [
                 {
@@ -422,6 +424,7 @@ class SQLiteHistoryRepository:
         self,
         cycle_id: str,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve all MarketEvents for a given cycle.
@@ -429,6 +432,7 @@ class SQLiteHistoryRepository:
         Args:
             cycle_id: The cycle identifier.
             limit: Maximum number of events to return.
+            offset: Number of records to skip.
 
         Returns:
             List of MarketEvent dicts.
@@ -442,19 +446,21 @@ class SQLiteHistoryRepository:
                 WHERE cycle_id = ?
                 ORDER BY created_at DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (cycle_id, limit),
+                (cycle_id, limit, offset),
             )
             return [json.loads(row[0]) for row in cursor.fetchall()]
         finally:
             conn.close()
 
-    def get_latest_market_events(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_latest_market_events(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """
         Retrieve the most recent MarketEvents across all cycles.
 
         Args:
             limit: Maximum number of events to return.
+            offset: Number of records to skip.
 
         Returns:
             List of MarketEvent dicts.
@@ -468,8 +474,9 @@ class SQLiteHistoryRepository:
                 FROM market_events
                 ORDER BY created_at DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (limit,),
+                (limit, offset),
             )
             results = []
             for row in cursor.fetchall():
@@ -485,6 +492,7 @@ class SQLiteHistoryRepository:
         self,
         ticker: str,
         limit: int = 50,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve MarketEvents for a specific ticker.
@@ -492,6 +500,7 @@ class SQLiteHistoryRepository:
         Args:
             ticker: Instrument ticker symbol.
             limit: Maximum number of events to return.
+            offset: Number of records to skip.
 
         Returns:
             List of MarketEvent dicts.
@@ -506,9 +515,133 @@ class SQLiteHistoryRepository:
                 WHERE ticker = ?
                 ORDER BY created_at DESC
                 LIMIT ?
+                OFFSET ?
                 """,
-                (ticker, limit),
+                (ticker, limit, offset),
             )
+            results = []
+            for row in cursor.fetchall():
+                event = json.loads(row[0])
+                event["_cycle_id"] = row[1]
+                event["_saved_at"] = row[2]
+                results.append(event)
+            return results
+        finally:
+            conn.close()
+
+    def get_market_event_by_id(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a single MarketEvent by its event_id.
+
+        Args:
+            event_id: The unique event identifier.
+
+        Returns:
+            Dict with event data if found, None otherwise.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT event_json, cycle_id, created_at
+                FROM market_events
+                WHERE event_id = ?
+                LIMIT 1
+                """,
+                (event_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                event = json.loads(row[0])
+                event["_cycle_id"] = row[1]
+                event["_saved_at"] = row[2]
+                return event
+            return None
+        finally:
+            conn.close()
+
+    def query_market_events(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        ticker: Optional[str] = None,
+        market: Optional[str] = None,
+        instrument_type: Optional[str] = None,
+        event_family: Optional[str] = None,
+        event_type: Optional[str] = None,
+        priority_final: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query MarketEvents with optional filters. All filters are optional.
+        Filters are applied via parameterized WHERE clauses. No dynamic SQL
+        with string concatenation of user values.
+
+        Args:
+            limit: Maximum number of events to return.
+            offset: Number of records to skip.
+            ticker: Filter by ticker (exact match).
+            market: Filter by market (exact match).
+            instrument_type: Filter by instrument_type (exact match).
+            event_family: Filter by event_family (exact match).
+            event_type: Filter by event_type (exact match).
+            priority_final: Filter by priority_final (exact match).
+            date_from: Filter by created_at >= this ISO datetime.
+            date_to: Filter by created_at <= this ISO datetime.
+
+        Returns:
+            List of MarketEvent dicts.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+
+            where_clauses: List[str] = []
+            params: List[Any] = []
+
+            if ticker is not None:
+                where_clauses.append("ticker = ?")
+                params.append(ticker)
+            if market is not None:
+                where_clauses.append("market = ?")
+                params.append(market)
+            if instrument_type is not None:
+                where_clauses.append("instrument_type = ?")
+                params.append(instrument_type)
+            if event_family is not None:
+                where_clauses.append("event_family = ?")
+                params.append(event_family)
+            if event_type is not None:
+                where_clauses.append("event_type = ?")
+                params.append(event_type)
+            if priority_final is not None:
+                where_clauses.append("priority_final = ?")
+                params.append(priority_final)
+            if date_from is not None:
+                where_clauses.append("created_at >= ?")
+                params.append(date_from)
+            if date_to is not None:
+                where_clauses.append("created_at <= ?")
+                params.append(date_to)
+
+            where_sql = ""
+            if where_clauses:
+                where_sql = "WHERE " + " AND ".join(where_clauses)
+
+            sql = f"""
+                SELECT event_json, cycle_id, created_at
+                FROM market_events
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT ?
+                OFFSET ?
+            """
+            params.append(limit)
+            params.append(offset)
+
+            cursor.execute(sql, params)
             results = []
             for row in cursor.fetchall():
                 event = json.loads(row[0])
