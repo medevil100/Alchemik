@@ -1,0 +1,45 @@
+/* ------------------------------------------------------------------ */
+/* Layout — nagłówek, main, stopka                                   */
+/* ------------------------------------------------------------------ */
+
+.appContainer {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+/* ---- Content area: nav + main ---- */
+.contentWrapper {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ---- Main content area ---- */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+/* ---- Tablet: nav is horizontal at top ---- */
+@media (min-width: 481px) and (max-width: 1023px) {
+  .contentWrapper {
+    flex-direction: column;
+  }
+}
+
+/* ---- Phone: no sidebar layout, nav is fixed bottom ---- */
+@media (max-width: 480px) {
+  .contentWrapper {
+    flex-direction: column;
+  }
+
+  .appContainer {
+    padding-bottom: 56px; /* space for fixed bottom nav */
+  }
+}

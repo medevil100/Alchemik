@@ -29,6 +29,19 @@ env/
 # Runtime data
 data/runtime/
 
+# Dashboard / Vite / TypeScript build artifacts
+dashboard/node_modules/
+dashboard/dist/
+dashboard/tsconfig.tsbuildinfo
+
+# Dashboard local command output artifacts
+dashboard/build_output.txt
+dashboard/test_output.txt
+dashboard/tsc_output.txt
+
+# Log files
+*.log
+
 # Temporary files
 *.tmp
 *.temp

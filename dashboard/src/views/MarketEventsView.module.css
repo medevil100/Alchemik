@@ -1,0 +1,375 @@
+/* ---------------------------------------------------------------------------
+   MarketEventsView — styles
+   --------------------------------------------------------------------------- */
+
+.container {
+  max-width: var(--content-max-width, 1200px);
+  margin: 0 auto;
+  padding: var(--spacing-4, 1rem);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3, 0.75rem);
+  margin-bottom: var(--spacing-4, 1rem);
+}
+
+.pageTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--color-text, #1a1a2e);
+}
+
+/* ---------------------------------------------------------------------------
+   Filter bar
+   --------------------------------------------------------------------------- */
+
+.filterBarContainer {
+  margin-bottom: var(--spacing-4, 1rem);
+}
+
+.filterToggle {
+  background: var(--color-surface, #f5f5f5);
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--color-text, #1a1a2e);
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filterToggle:hover {
+  background: var(--color-border, #e0e0e0);
+}
+
+.filterForm {
+  display: none;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+  padding: var(--spacing-3, 0.75rem);
+  margin-top: var(--spacing-2, 0.5rem);
+  background: var(--color-surface, #fafafa);
+}
+
+.filterFormOpen {
+  display: block;
+}
+
+.filterGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-3, 0.75rem);
+}
+
+.filterField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.filterLabel {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-muted, #555);
+}
+
+.filterInput {
+  padding: 0.5rem;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  background: #fff;
+  color: var(--color-text, #1a1a2e);
+}
+
+.filterInput:focus {
+  outline: 2px solid var(--color-primary, #3a6bd5);
+  outline-offset: -1px;
+}
+
+.filterActions {
+  display: flex;
+  gap: var(--spacing-2, 0.5rem);
+  margin-top: var(--spacing-3, 0.75rem);
+}
+
+.filterApply,
+.filterClear {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  border: 1px solid var(--color-border, #e0e0e0);
+}
+
+.filterApply {
+  background: var(--color-primary, #3a6bd5);
+  color: #fff;
+  border-color: var(--color-primary, #3a6bd5);
+}
+
+.filterApply:hover {
+  opacity: 0.9;
+}
+
+.filterClear {
+  background: var(--color-surface, #f5f5f5);
+  color: var(--color-text, #1a1a2e);
+}
+
+.filterClear:hover {
+  background: var(--color-border, #e0e0e0);
+}
+
+/* ---------------------------------------------------------------------------
+   Summary
+   --------------------------------------------------------------------------- */
+
+.summary {
+  font-size: 0.875rem;
+  color: var(--color-text-muted, #555);
+  margin-bottom: var(--spacing-3, 0.75rem);
+}
+
+/* ---------------------------------------------------------------------------
+   Desktop table
+   --------------------------------------------------------------------------- */
+
+.tableContainer {
+  overflow-x: auto;
+  margin-bottom: var(--spacing-4, 1rem);
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  min-width: 700px;
+}
+
+.table thead {
+  background: var(--color-surface, #f5f5f5);
+}
+
+.table th {
+  padding: 0.75rem 0.5rem;
+  text-align: left;
+  font-weight: 700;
+  color: var(--color-text, #1a1a2e);
+  border-bottom: 2px solid var(--color-border, #e0e0e0);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.625rem 0.5rem;
+  border-bottom: 1px solid var(--color-border, #e0e0e0);
+  vertical-align: top;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface, #fafafa);
+}
+
+.tickerCell {
+  font-weight: 700;
+  color: var(--color-primary, #3a6bd5);
+}
+
+.monoText {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.8125rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Mobile cards
+   --------------------------------------------------------------------------- */
+
+.cardList {
+  display: none;
+}
+
+.eventCard {
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+  padding: var(--spacing-3, 0.75rem);
+  margin-bottom: var(--spacing-3, 0.75rem);
+  background: #fff;
+}
+
+.cardTicker {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-primary, #3a6bd5);
+  margin: 0 0 var(--spacing-2, 0.5rem) 0;
+}
+
+.cardDetails {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.cardRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8125rem;
+}
+
+.cardRow dt {
+  font-weight: 600;
+  color: var(--color-text-muted, #555);
+}
+
+.cardRow dd {
+  margin: 0;
+  text-align: right;
+  color: var(--color-text, #1a1a2e);
+}
+
+/* ---------------------------------------------------------------------------
+   Pagination
+   --------------------------------------------------------------------------- */
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--spacing-3, 0.75rem);
+  padding: var(--spacing-3, 0.75rem) 0;
+}
+
+.paginationDesktop {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3, 0.75rem);
+}
+
+.paginationButton {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 4px;
+  background: var(--color-surface, #f5f5f5);
+  color: var(--color-text, #1a1a2e);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.paginationButton:hover:not(:disabled) {
+  background: var(--color-border, #e0e0e0);
+}
+
+.paginationButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.paginationInfo {
+  font-size: 0.875rem;
+  color: var(--color-text-muted, #555);
+}
+
+.paginationMobile {
+  display: none;
+}
+
+.loadMoreButton {
+  padding: 0.75rem 1.5rem;
+  border: 1px solid var(--color-primary, #3a6bd5);
+  border-radius: 4px;
+  background: var(--color-primary, #3a6bd5);
+  color: #fff;
+  font-size: 0.875rem;
+  cursor: pointer;
+  width: 100%;
+}
+
+.loadMoreButton:hover {
+  opacity: 0.9;
+}
+
+/* ---------------------------------------------------------------------------
+   No more events message (when past last page)
+   --------------------------------------------------------------------------- */
+
+.noMoreContainer {
+  text-align: center;
+  padding: var(--spacing-4, 1rem);
+  color: var(--color-text-muted, #555);
+}
+
+.noMoreText {
+  font-size: 0.938rem;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive: tablet (≥ 768px)
+   --------------------------------------------------------------------------- */
+
+@media (min-width: 768px) {
+  .filterGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .filterToggle {
+    width: auto;
+  }
+
+  .filterForm {
+    display: block; /* Always visible on tablet/desktop */
+  }
+
+  .filterBarContainer .filterToggle {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive: desktop (≥ 1024px)
+   --------------------------------------------------------------------------- */
+
+@media (min-width: 1024px) {
+  .filterGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive: phone (< 768px)
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 767px) {
+  /* Hide table, show cards */
+  .tableContainer {
+    display: none;
+  }
+
+  .cardList {
+    display: block;
+  }
+
+  .paginationDesktop {
+    display: none;
+  }
+
+  .paginationMobile {
+    display: block;
+  }
+
+  .filterForm {
+    display: none;
+  }
+
+  .filterFormOpen {
+    display: block;
+  }
+}
