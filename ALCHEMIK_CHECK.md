@@ -5,13 +5,13 @@
 | Atrybut | Wartość |
 |---------|---------|
 | Status projektu | **AKTYWNY** |
-| Aktualny etap | **ETAP 5** (ukończony, zamrożony) |
-| Ukończone etapy | ETAP 1, ETAP 2, ETAP 3, ETAP 4, ETAP 5 |
-| Zamrożone etapy | ETAP 1, ETAP 2, ETAP 3, ETAP 4, ETAP 5 |
-| Ostatni commit | `2311de6` (HEAD -> master) |
+| Aktualny etap | **FAZA 2 ETAPU 6** (ukończona, zamrożona) |
+| Ukończone etapy | ETAP 1, ETAP 2, ETAP 3, ETAP 4, ETAP 5, FAZA 1 ETAPU 6, FAZA 2 ETAPU 6 |
+| Zamrożone etapy | ETAP 1, ETAP 2, ETAP 3, ETAP 4, ETAP 5, FAZA 1 ETAPU 6, FAZA 2 ETAPU 6 |
+| Ostatni commit | `22a7108` (23.07.2026) |
 | Branch | `master` |
-| Data ostatniego commita | 22.07.2026 |
-| Liczba testów backendu | **28** plików testowych w `tests/` |
+| Data ostatniego commita | 23.07.2026 |
+| Liczba testów backendu | **42** plików testowych w `tests/` |
 | Liczba testów frontendu | **10** plików testowych w `dashboard/src/` (w podkatalogach `api/__tests__/`, `components/__tests__/`, `hooks/__tests__/`, `views/__tests__/`, `__tests__/`) |
 
 ## Status modułów
@@ -32,11 +32,12 @@
 | **Risk Engine** | ✅ Zamrożony | Ocena ryzyka: risk_score, risk_level, stop_loss, take_profit |
 | **Hunter Engine** | ✅ Zamrożony | Gromadzenie danych z Yahoo Finance |
 | **Analyst Engine** | ✅ Zamrożony | Generowanie końcowej analizy |
-| **Master Engine** | ✅ Zamrożony | Orkiestracja pipeline'u analizy |
-| **Price Detector** | ✅ Zamrożony | Wykrywanie zdarzeń cenowych (w ramach TechnicalEngine) |
-| **Volume Detector** | ✅ Zamrożony | Wykrywanie zdarzeń wolumenowych (w ramach TechnicalEngine) |
+| **Master Engine** | ✅ Zamrożony | Orkiestracja pipeline'u analizy, przekazuje MarketEvent do DecisionEngine |
+| **DecisionEngine** | ✅ Zamrożony | Kanoniczny kontrakt: process_event(MarketEvent), adapter process_data(dict) |
+| **Price Detector** | ✅ Zamrożony | Wykrywanie zdarzeń cenowych, tworzy MarketEvent |
+| **Volume Detector** | ✅ Zamrożony | Wykrywanie zdarzeń wolumenowych, tworzy MarketEvent |
 | **Universe** | ✅ Zamrożony | Lista dozwolonych instrumentów |
-| **Market Scanner** | ✅ Zamrożony | Skanowanie rynku w poszukiwaniu kandydatów |
+| **Market Scanner** | ✅ Zamrożony | Skanowanie rynku, dostarcza OHLCV do pipeline |
 | **Opportunity Deduplicator** | ✅ Zamrożony | Deduplikacja zdarzeń |
 | **Alert Builder** | ✅ Zamrożony | Decyzja o wysłaniu alertu |
 | **Alert Dispatcher** | ✅ Zamrożony | Wysyłka alertów przez kanały |
@@ -52,46 +53,21 @@ Wszystkie moduły powyżej są zamrożone zgodnie z zasadą zamrożenia architek
 - `config/` — wszystkie konfiguracje
 - `data/` — modele danych, źródła danych
 - `engines/` — wszystkie silniki (ai, analyst, hunter, master, news, price_detector, ranking, risk, technical, volume_detector)
-- `tests/` — wszystkie testy (28 plików)
+- `tests/` — wszystkie testy (29 plików)
 - `scripts/` — skrypty diagnostyczne
 - `dashboard/` — cały frontend React
 
 ## Następny planowany etap
 
-**ETAP 6** — szczegóły w `docs/ETAP_6_ARCHITEKTURA.md`
+**ETAP 7** — rozbudowa alertów, dashboard zdarzeniowy, ocena jakości zdarzeń (Critical/High/Medium/Low/Ignore), scalanie zdarzeń (Composite Events).
 
-## Procedura kontroli regresji liczby testów
-
-Przed uruchomieniem pełnego zestawu testów w każdym zadaniu należy wykonać:
-
-```text
-python -m pytest --collect-only -q
-```
-
-Liczbę zebranych testów należy porównać z wartością bazową z ostatniego zatwierdzonego kroku.
-
-**Wartość bazowa po Kroku 1B**: `561 tests collected`, `561 passed`.
-
-### Procedura
-
-1. Odczytaj bazową liczbę testów z ostatniego zatwierdzonego raportu.
-2. Uruchom `python -m pytest --collect-only -q`.
-3. Porównaj liczbę zebranych testów.
-4. **Jeżeli liczba spadła bez zgody właściciela** — natychmiast przerwij zadanie i zgłoś regresję kolekcji testów.
-5. Jeżeli liczba jest równa lub większa — uruchom `python -m pytest`.
-6. Zapisz obie liczby w raporcie końcowym.
-7. Nowy zatwierdzony raport staje się bazą dla następnego kroku.
-
-### Reguły
-
-- **Wzrost** liczby testów (np. `561 → 570`) jest dozwolony, jeżeli nowe testy wynikają z bieżącego zadania.
-- **Spadek** liczby testów (np. `561 → 550`) jest blokerem, chyba że właściciel projektu wydał wcześniej jednoznaczną zgodę na usunięcie testów, zastąpienie testów, zmianę kolekcji testów lub usunięcie funkcjonalności wraz z testami.
-- Nie wystarczy wynik `python -m pytest` — kontrola musi opierać się najpierw na `python -m pytest --collect-only -q`.
-- Nie używaj `python -m pytest tests/`.
+Szczegóły zostaną określone w dokumentacji planistycznej ETAPU 7.
 
 ## Daty
 
 | Zdarzenie | Data |
 |-----------|------|
-| Ostatnia aktualizacja dokumentacji | 22.07.2026 |
+| Ostatnia aktualizacja dokumentacji | 23.07.2026 |
 | Zamrożenie ETAPU 5 | 22.07.2026 |
+| Zamrożenie FAZY 1 ETAPU 6 (MarketEvent Pipeline) | 23.07.2026 |
+| Zamrożenie FAZY 2 ETAPU 6 (Detektory + Integracja MasterEngine) | 23.07.2026 |

@@ -272,13 +272,13 @@ class TestDashboardAggregations(unittest.TestCase):
 
 
 class TestDashboardTimeHandling(unittest.TestCase):
-    """Test time-related edge cases with ISO 8601 UTC timestamps."""
+    """Test time-related edge cases with ISO 8601 UTC timestamps.
 
-    _TS_UTC = "2026-07-20T20:00:00.000000+00:00"
-    _TS_INSIDE = "2026-07-20T19:59:59.000000+00:00"  # 1 second inside 1h window
-    _TS_BORDER = "2026-07-20T19:00:00.000000+00:00"   # exactly on 1h border
-    _TS_OUTSIDE = "2026-07-20T18:59:59.000000+00:00"  # 1 second outside 1h window
-    _TS_LOCAL_OLD = "2026-07-19T22:00:00"              # old local-time format (no offset, yesterday)
+    All timestamps are computed relative to a single reference time
+    (``ref_now``) captured at test setup, not hardcoded calendar dates.
+    This eliminates the test's dependency on the system clock and ensures
+    deterministic behaviour regardless of when the tests are executed.
+    """
 
     def setUp(self):
         self.temp_db = tempfile.NamedTemporaryFile(delete=False)
@@ -286,12 +286,26 @@ class TestDashboardTimeHandling(unittest.TestCase):
         self.temp_db.close()
         self.repo = SQLiteHistoryRepository(self.db_path)
 
+        # Single reference time — all test timestamps are derived from it.
+        ref_now = datetime.now(timezone.utc)
+
+        # Four events that form a clear time hierarchy:
+        #   _TS_UTC     = now                     (most recent)
+        #   _TS_INSIDE  = now - 1 second          (just inside a 1‑hour window)
+        #   _TS_BORDER  = now - 1 hour            (exactly on the 1‑hour border)
+        #   _TS_OUTSIDE = now - 1h - 1 second     (just outside a 1‑hour window)
+        self._TS_UTC = ref_now.isoformat()
+        self._TS_INSIDE = (ref_now - timedelta(seconds=1)).isoformat()
+        self._TS_BORDER = (ref_now - timedelta(hours=1)).isoformat()
+        self._TS_OUTSIDE = (ref_now - timedelta(hours=1) - timedelta(seconds=1)).isoformat()
+        # Old-style local-time format (no timezone offset) well inside a 24h window
+        self._TS_LOCAL_OLD = (ref_now - timedelta(hours=20)).isoformat()
+
         # Insert events with explicit created_at via raw SQL to control timestamps
         conn = sqlite3.connect(self.db_path)
-        now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT INTO cycles (cycle_id, created_at) VALUES ('c_time', ?)",
-            (now,),
+            (ref_now.isoformat(),),
         )
         # Insert events with various timestamp formats
         events = [
@@ -299,6 +313,7 @@ class TestDashboardTimeHandling(unittest.TestCase):
             ("evt_inside", "TST_TIME", self._TS_INSIDE),
             ("evt_border", "TST_TIME", self._TS_BORDER),
             ("evt_outside", "TST_TIME", self._TS_OUTSIDE),
+            ("evt_local_old", "TST_TIME", self._TS_LOCAL_OLD),
         ]
         for eid, ticker, ts in events:
             conn.execute(

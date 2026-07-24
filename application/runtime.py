@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime
-from data.models import MarketEvent, InstrumentType
+from data.models import MarketEvent, InstrumentType, MarketData
 from data.models.final_analysis_result import FinalAnalysisResult
 from .models import CycleReport, CandidateError
 from .market_scanner import MarketScanner
@@ -64,12 +64,20 @@ class RuntimeService:
         
         try:
             # Step 1: Get candidates from MarketScanner or Hunter Engine
+            ohlcv_map: Dict[str, List[MarketData]] = {}
             if self.market_scanner:
                 candidates = self.market_scanner.scan()
+                # Build symbol -> List[MarketData] mapping from scanner results
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        sym = candidate.get('symbol')
+                        data = candidate.get('data')
+                        if sym and isinstance(data, list):
+                            ohlcv_map[sym] = data
                 hunter_result = self.hunter_engine.scan(candidates)
             else:
                 hunter_result = self.hunter_engine.scan(input_data or {})
-            
+
             candidates_count = len(hunter_result.opportunities)
             
             # Step 2: Process each candidate through Master Engine
@@ -95,6 +103,9 @@ class RuntimeService:
                     candidate.instrument_id
                 )
                 
+                # Look up OHLCV data for this candidate from the scanner results
+                candidate_ohlcv = ohlcv_map.get(candidate.instrument_id)
+
                 # Process candidate through Master Engine
                 # Collect detected events via a local list (no tuple, no self.last_events)
                 detected_events: List[MarketEvent] = []
@@ -104,6 +115,7 @@ class RuntimeService:
                         market=market,
                         instrument_type=instrument_type,
                         events_out=detected_events,
+                        ohlcv_data=candidate_ohlcv,
                     )
                     results.append(result)
                     success_count += 1

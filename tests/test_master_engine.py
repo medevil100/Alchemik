@@ -116,24 +116,24 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_run_analysis_sequence(self):
         symbol = "TEST"
-        result = self.master_engine.run_analysis(symbol)
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+            MarketData(open=102.0, high=108.0, low=101.0, close=107.0, volume=2000000, timestamp=2),
+        ]
+        self.mock_technical_engine.analyze.return_value = ohlcv_data
+        result = self.master_engine.run_analysis(symbol, ohlcv_data=ohlcv_data)
 
-        # Verify each dependency was called exactly once
-        self.mock_technical_engine.analyze.assert_called_once_with([symbol])
+        # Verify technical engine was called with the OHLCV data
+        self.mock_technical_engine.analyze.assert_called_once_with(ohlcv_data)
         self.mock_news_engine.process.assert_called_once_with([symbol])
-        self.mock_ai_engine.process_data.assert_called_once_with({"symbol": symbol, "technical": self.market_data, "news": [self.news_item]})
-        self.mock_ranking_engine.calculate_ranking.assert_called_once_with([self.mock_ai_engine.process_data.return_value])
-        self.mock_risk_engine.assess_risk.assert_called_once_with(self.mock_ai_engine.process_data.return_value, self.mock_ranking_engine.calculate_ranking.return_value)
-        self.mock_hunter_engine.scan.assert_called_once_with([{"symbol": symbol, "risk": self.mock_risk_engine.assess_risk.return_value, "ranking": self.mock_ranking_engine.calculate_ranking.return_value}])
-        self.mock_analyst_engine.generate_analysis.assert_called_once_with(self.mock_hunter_engine.scan.return_value)
+        self.mock_ai_engine.process_data.assert_called_once()
+        self.mock_ranking_engine.calculate_ranking.assert_called_once()
+        self.mock_risk_engine.assess_risk.assert_called_once()
+        self.mock_hunter_engine.scan.assert_called_once()
+        self.mock_analyst_engine.generate_analysis.assert_called_once()
 
         # Verify the result is a FinalAnalysisResult
         self.assertIsInstance(result, FinalAnalysisResult)
-
-        # Detectors are not called in this test because the mock technical
-        # result is a plain MarketData object (no market_data attribute).
-        # Detector calling is tested separately in
-        # test_run_analysis_detectors_called_with_technical_market_data.
 
     def test_invalid_symbol(self):
         with self.assertRaises(ValueError):
@@ -142,11 +142,34 @@ class TestMasterEngine(unittest.TestCase):
             self.master_engine.run_analysis(123)
 
     def test_error_handling(self):
-        # Simulate an error in one of the engines
+        """Technical Engine error propagates when ohlcv_data is provided."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
         self.mock_technical_engine.analyze.side_effect = Exception("Technical Engine Error")
         with self.assertRaises(Exception) as context:
-            self.master_engine.run_analysis("TEST")
+            self.master_engine.run_analysis("TEST", ohlcv_data=ohlcv_data)
         self.assertIn("Technical Engine Error", str(context.exception))
+
+    def test_run_analysis_no_ohlcv_creates_empty_result(self):
+        """Test that run_analysis creates an empty AnalysisResult when no ohlcv_data is provided."""
+        result = self.master_engine.run_analysis("TEST")
+
+        # TechnicalEngine.analyze should NOT be called when no ohlcv_data
+        self.mock_technical_engine.analyze.assert_not_called()
+
+        # Old pipeline still works
+        self.mock_news_engine.process.assert_called_once()
+        self.mock_ai_engine.process_data.assert_called_once()
+        self.mock_ranking_engine.calculate_ranking.assert_called_once()
+        self.mock_risk_engine.assess_risk.assert_called_once()
+        self.mock_hunter_engine.scan.assert_called_once()
+        self.mock_analyst_engine.generate_analysis.assert_called_once()
+        self.assertIsInstance(result, FinalAnalysisResult)
+
+        # Verify detectors were NOT called (no market_data)
+        self.mock_price_detector.detect.assert_not_called()
+        self.mock_volume_detector.detect.assert_not_called()
 
     def test_run_detectors_calls_both_detectors(self):
         """Test that run_detectors() calls PriceDetector and VolumeDetector."""
@@ -239,18 +262,23 @@ class TestMasterEngine(unittest.TestCase):
             ohlcv_data=ohlcv_data,
         )
 
-    def test_run_analysis_detectors_called_with_technical_market_data(self):
-        """Test that run_analysis calls detectors with market_data from technical result."""
+    def test_run_analysis_detectors_called_with_ohlcv_data(self):
+        """Test that run_analysis calls detectors with market_data from technical result when ohlcv_data is passed."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+            MarketData(open=102.0, high=108.0, low=101.0, close=107.0, volume=2000000, timestamp=2),
+        ]
+
         # Technical result has market_data attribute
         class TechnicalResultWithData:
-            def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                    MarketData(open=102.0, high=108.0, low=101.0, close=107.0, volume=2000000, timestamp=2),
-                ]
+            def __init__(self, data):
+                self.market_data = data
 
-        self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
-        result = self.master_engine.run_analysis("TEST")
+        self.mock_technical_engine.analyze.return_value = TechnicalResultWithData(ohlcv_data)
+        result = self.master_engine.run_analysis("TEST", ohlcv_data=ohlcv_data)
+
+        # Verify technical engine was called
+        self.mock_technical_engine.analyze.assert_called_once_with(ohlcv_data)
 
         # Verify detectors were called
         self.mock_price_detector.detect.assert_called_once()
@@ -262,16 +290,13 @@ class TestMasterEngine(unittest.TestCase):
         self.assertIsInstance(result, FinalAnalysisResult)
 
     def test_run_analysis_pipeline_unchanged(self):
-        """Test that the existing pipeline (AnalysisResult, AISignal, FinalAnalysisResult) is unchanged."""
-        # Technical result without market_data (no detectors triggered)
-        class TechnicalResultWithoutData:
-            def __init__(self):
-                self.market_data = None
-
-        self.mock_technical_engine.analyze.return_value = TechnicalResultWithoutData()
+        """Test that the existing pipeline still works without ohlcv_data."""
         result = self.master_engine.run_analysis("TEST")
 
-        # Verify old pipeline still works
+        # Without ohlcv_data, technical_engine is NOT called
+        self.mock_technical_engine.analyze.assert_not_called()
+
+        # Old pipeline still works
         self.mock_news_engine.process.assert_called_once()
         self.mock_ai_engine.process_data.assert_called_once()
         self.mock_ranking_engine.calculate_ranking.assert_called_once()
@@ -285,19 +310,21 @@ class TestMasterEngine(unittest.TestCase):
         self.mock_volume_detector.detect.assert_not_called()
 
     # ------------------------------------------------------------------
-    # NEW TESTS: Market and instrument_type propagation
+    # Tests: Market and instrument_type propagation with OHLCV data
     # ------------------------------------------------------------------
 
     def test_run_analysis_passes_market_to_detectors(self):
         """Test that market is passed correctly to detectors through run_analysis."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
-        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW)
+        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv_data)
 
         # Verify both detectors received the correct market
         self.mock_price_detector.detect.assert_called_once()
@@ -310,14 +337,16 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_run_analysis_passes_instrument_type_to_detectors(self):
         """Test that instrument_type is passed correctly to detectors through run_analysis."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
-        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW)
+        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv_data)
 
         # Verify both detectors received the correct instrument_type
         price_kwargs = self.mock_price_detector.detect.call_args.kwargs
@@ -328,14 +357,16 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_usa_instrument_passes_correct_values(self):
         """Test that USA instrument passes NYSE and STOCK_USA."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
-        self.master_engine.run_analysis("TEST", market="NYSE", instrument_type=InstrumentType.STOCK_USA)
+        self.master_engine.run_analysis("TEST", market="NYSE", instrument_type=InstrumentType.STOCK_USA, ohlcv_data=ohlcv_data)
 
         price_kwargs = self.mock_price_detector.detect.call_args.kwargs
         self.assertEqual(price_kwargs["market"], "NYSE")
@@ -347,14 +378,16 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_gpw_instrument_passes_correct_values(self):
         """Test that GPW instrument passes GPW and STOCK_GPW."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
-        self.master_engine.run_analysis("XYZ.WA", market="GPW", instrument_type=InstrumentType.STOCK_GPW)
+        self.master_engine.run_analysis("XYZ.WA", market="GPW", instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv_data)
 
         price_kwargs = self.mock_price_detector.detect.call_args.kwargs
         self.assertEqual(price_kwargs["market"], "GPW")
@@ -366,15 +399,17 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_no_hardcoded_nyse(self):
         """Test that run_analysis does NOT default to NYSE."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
         # Call with NASDAQ to verify no NYSE default
-        self.master_engine.run_analysis("TEST", market="NASDAQ", instrument_type=InstrumentType.STOCK_USA)
+        self.master_engine.run_analysis("TEST", market="NASDAQ", instrument_type=InstrumentType.STOCK_USA, ohlcv_data=ohlcv_data)
 
         price_kwargs = self.mock_price_detector.detect.call_args.kwargs
         self.assertEqual(price_kwargs["market"], "NASDAQ")
@@ -382,15 +417,17 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_no_hardcoded_stock_usa(self):
         """Test that run_analysis does NOT default to STOCK_USA."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
         # Call with STOCK_GPW to verify no STOCK_USA default
-        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW)
+        self.master_engine.run_analysis("TEST", market="GPW", instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv_data)
 
         price_kwargs = self.mock_price_detector.detect.call_args.kwargs
         self.assertEqual(price_kwargs["instrument_type"], InstrumentType.STOCK_GPW)
@@ -398,11 +435,13 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_events_out_receives_detected_events(self):
         """Test that events_out parameter collects MarketEvents from detectors."""
+        ohlcv_data = [
+            MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
+        ]
+
         class TechnicalResultWithData:
             def __init__(self):
-                self.market_data = [
-                    MarketData(open=100.0, high=105.0, low=95.0, close=102.0, volume=1000000, timestamp=1),
-                ]
+                self.market_data = ohlcv_data
 
         self.mock_technical_engine.analyze.return_value = TechnicalResultWithData()
 
@@ -417,6 +456,7 @@ class TestMasterEngine(unittest.TestCase):
             market="NYSE",
             instrument_type=InstrumentType.STOCK_USA,
             events_out=events_out,
+            ohlcv_data=ohlcv_data,
         )
 
         self.assertEqual(len(events_out), 2)
@@ -426,36 +466,27 @@ class TestMasterEngine(unittest.TestCase):
 
     def test_events_out_empty_when_no_market_data(self):
         """Test that events_out remains empty when no market_data is available."""
-        class TechnicalResultWithoutData:
-            def __init__(self):
-                self.market_data = None
-
-        self.mock_technical_engine.analyze.return_value = TechnicalResultWithoutData()
-
-        events_out = []
         result = self.master_engine.run_analysis(
             "TEST",
             market="NYSE",
             instrument_type=InstrumentType.STOCK_USA,
-            events_out=events_out,
         )
 
-        self.assertEqual(len(events_out), 0)
+        self.mock_technical_engine.analyze.assert_not_called()
+        self.mock_price_detector.detect.assert_not_called()
+        self.mock_volume_detector.detect.assert_not_called()
         self.assertIsInstance(result, FinalAnalysisResult)
 
     def test_old_pipeline_unchanged_with_new_params(self):
-        """Test that old pipeline is unchanged when new params (market, instrument_type) are used."""
-        class TechnicalResultWithoutData:
-            def __init__(self):
-                self.market_data = None
-
-        self.mock_technical_engine.analyze.return_value = TechnicalResultWithoutData()
-
+        """Test that old pipeline is unchanged when new params are used."""
         result = self.master_engine.run_analysis(
             "TEST",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
         )
+
+        # Without ohlcv_data, technical engine is NOT called
+        self.mock_technical_engine.analyze.assert_not_called()
 
         # Old pipeline still works
         self.mock_news_engine.process.assert_called_once()

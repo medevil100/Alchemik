@@ -87,9 +87,27 @@ class TestMasterEngineE2E(unittest.TestCase):
         )
 
     def test_full_pipeline_flow(self):
-        # Run analysis
+        # Run analysis with OHLCV data
         symbol = "MOCK_SYMBOL"
-        result = self.master_engine.run_analysis(symbol)
+        ohlcv_data = [
+            MarketData(
+                open=100.0,
+                high=105.0,
+                low=95.0,
+                close=102.0,
+                volume=1000000,
+                timestamp=datetime.now()
+            ),
+            MarketData(
+                open=102.0,
+                high=108.0,
+                low=101.0,
+                close=107.0,
+                volume=2000000,
+                timestamp=datetime.now()
+            ),
+        ]
+        result = self.master_engine.run_analysis(symbol, ohlcv_data=ohlcv_data)
 
         # Validate FinalAnalysisResult
         self.assertIsInstance(result, FinalAnalysisResult)

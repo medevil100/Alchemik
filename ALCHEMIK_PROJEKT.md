@@ -465,11 +465,35 @@ c:\alchemik\
 - API Client (client, config, api, types)
 - **Commit**: `2311de6`
 
+### FAZA 2 ETAPU 6 — Implementacja wszystkich detektorów zdarzeń rynkowych i integracja z MasterEngine
+- Implementacja frameworka detektorów: `BaseDetector`, `DetectionContext`, `DetectionResult`, `DetectorRegistry`, `DetectorOrchestrator`
+- Implementacja 11 detektorów: Technical, Fundamental, Corporate, Regulatory, Macro, ETF, Derivatives, Sentiment, System (+ istniejące Price i Volume)
+- Konfiguracje progów: `technical_events.py`, `fundamental_events.py`, `corporate_events.py`, `macro_events.py`, `etf_events.py`, `sentiment_events.py`
+- Integracja wszystkich detektorów z `MasterEngine` przez `DetectorOrchestrator`
+- Testy jednostkowe i integracyjne dla wszystkich detektorów
+- **Status**: ✅ Zakończony i zamrożony (23.07.2026)
+
 ---
 
 ## 17. Zamrożone etapy
 
-Wszystkie etapy od ETAP 1 do ETAP 5 są zamrożone. Zgodnie z zasadami projektu, architektura rdzenia nie może być modyfikowana bez świadomej decyzji projektowej.
+Wszystkie etapy od ETAP 1 do ETAP 5 oraz FAZA 1 i FAZA 2 ETAPU 6 są zamrożone. Zgodnie z zasadami projektu, architektura rdzenia nie może być modyfikowana bez świadomej decyzji projektowej.
+
+### FAZA 1 ETAPU 6 — Integracja MarketEvent jako centralnego obiektu pipeline
+- `DecisionEngine.process_event(MarketEvent)` jako kanoniczny kontrakt wejściowy
+- Mapowanie `technical_context` z `AnalysisResult.indicators` do `MarketEvent`
+- `process_data(dict)` jako adapter kompatybilności wstecznej
+- Wspólna fabryka `_build_aisignal()` — jedna logika wykonania
+- Testy akceptacyjne: 7 testów
+- **Status**: ✅ Zakończony i zamrożony (23.07.2026)
+
+### FAZA 2 ETAPU 6 — Implementacja wszystkich detektorów zdarzeń rynkowych i integracja z MasterEngine
+- Framework detektorów (`BaseDetector`, `DetectionContext`, `DetectionResult`, `DetectorRegistry`, `DetectorOrchestrator`)
+- 11 detektorów (Technical, Fundamental, Corporate, Regulatory, Macro, ETF, Derivatives, Sentiment, System + Price, Volume)
+- Konfiguracje progów dla 6 rodzin zdarzeń
+- Integracja z `MasterEngine` przez `DetectorOrchestrator`
+- Testy jednostkowe i integracyjne
+- **Status**: ✅ Zakończony i zamrożony (23.07.2026)
 
 ---
 
@@ -482,7 +506,8 @@ Wszystkie etapy od ETAP 1 do ETAP 5 są zamrożone. Zgodnie z zasadami projektu,
 | ETAP 3 | ✅ Zamrożony | Read Service + API |
 | ETAP 4 | ✅ Zamrożony | Dashboard API |
 | ETAP 5 | ✅ Zamrożony | Frontend React |
-| ETAP 6 | 📋 Planowany | **Szczegóły w `docs/ETAP_6_ARCHITEKTURA.md`** |
+| FAZA 1 ETAPU 6 | ✅ Zamrożony | Integracja MarketEvent jako centralnego obiektu pipeline |
+| FAZA 2 ETAPU 6 | ✅ Zamrożony | Implementacja wszystkich detektorów i integracja z MasterEngine |
 
 ---
 
@@ -491,19 +516,21 @@ Wszystkie etapy od ETAP 1 do ETAP 5 są zamrożone. Zgodnie z zasadami projektu,
 - Backend: kompletny, zamrożony
 - Frontend: kompletny, zamrożony
 - API: kompletne, zamrożone
-- Testy: 28 plików testowych backendu + testy frontendu
-- Dokumentacja: kompletna, zsynchronizowana z kodem
-- Ostatni commit: `2311de6` (22.07.2026)
+- FAZA 1 ETAPU 6: zakończony i zamrożony (23.07.2026)
+- FAZA 2 ETAPU 6: zakończony i zamrożony (23.07.2026)
+- Detektory: 11 detektorów — wszystkie zaimplementowane, przetestowane i zamrożone
+- Testy: testy jednostkowe i integracyjne dla wszystkich detektorów + istniejące testy projektu
+- Dokumentacja: zaktualizowana
+- Ostatnia aktualizacja: 23.07.2026
 - Branch: `master`
 
 ---
 
 ## 20. Następny etap
 
-**ETAP 6** — szczegóły w `docs/ETAP_6_ARCHITEKTURA.md`
+**ETAP 7** — rozbudowa alertów, dashboard zdarzeniowy, ocena jakości zdarzeń, scalanie zdarzeń (Composite Events).
 
-Dokument zawiera cel, uzasadnienie, zależności, zakres, ryzyka i kryteria ukończenia ETAPU 6.
-
+Szczegóły zostaną określone w dokumentacji planistycznej ETAPU 7.
 ---
 
 ## 21. Dokumenty projektu
