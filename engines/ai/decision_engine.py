@@ -14,6 +14,8 @@ from typing import Dict, Any, List, Optional
 from data.models.ai_signal import AISignal
 from data.models.analysis_result import AnalysisResult
 from data.models.market_event import MarketEvent
+from data.models.pipeline_decision import PipelineDecision
+from data.models.event_enums import PriorityLevel
 from engines.technical import TechnicalEngine
 from engines.news import NewsPipeline
 
@@ -134,6 +136,97 @@ class DecisionEngine:
             )
         except Exception as e:
             raise RuntimeError(f"Failed to process data: {e}")
+
+    # ------------------------------------------------------------------
+    # Pipeline decision — ETAP 7.4
+    # ------------------------------------------------------------------
+
+    def decide_pipeline(self, event: MarketEvent) -> PipelineDecision:
+        """
+        Decide which pipeline stages to execute based on quality_level.
+
+        Implements the decision rules from ETAP 7.4, section 7.4 of
+        docs/ETAP_7_PLAN.md and ETAP 9 of docs/Kontrakt_Zdarzen_Rynkowych.md.
+
+        Rules:
+            CRITICAL → News + Tavily + AI (full analysis)
+            HIGH     → News + AI (Tavily optional)
+            MEDIUM   → News only
+            LOW      → archive only (no analysis)
+            IGNORE   → stop processing (duplicate)
+
+        Args:
+            event: A MarketEvent with quality_level set by QualityEngine.
+
+        Returns:
+            PipelineDecision with flags for each pipeline stage.
+
+        Raises:
+            RuntimeError: If the event has no quality_level set.
+        """
+        try:
+            ql = event.quality_level
+        except AttributeError:
+            raise RuntimeError(
+                "MarketEvent has no quality_level — "
+                "QualityEngine must run before DecisionEngine"
+            )
+
+        if ql == PriorityLevel.CRITICAL:
+            return PipelineDecision(
+                run_news=True,
+                run_tavily=True,
+                run_ai=True,
+                reason=(
+                    f"CRITICAL — pełna analiza: "
+                    f"News + Tavily + AI dla {event.ticker} ({event.event_type})"
+                ),
+            )
+        elif ql == PriorityLevel.HIGH:
+            return PipelineDecision(
+                run_news=True,
+                run_tavily=False,
+                run_ai=True,
+                reason=(
+                    f"HIGH — analiza: "
+                    f"News + AI dla {event.ticker} ({event.event_type})"
+                ),
+            )
+        elif ql == PriorityLevel.MEDIUM:
+            return PipelineDecision(
+                run_news=True,
+                run_tavily=False,
+                run_ai=False,
+                reason=(
+                    f"MEDIUM — tylko News dla {event.ticker} ({event.event_type})"
+                ),
+            )
+        elif ql == PriorityLevel.LOW:
+            return PipelineDecision(
+                run_news=False,
+                run_tavily=False,
+                run_ai=False,
+                reason=(
+                    f"LOW — tylko archiwizacja dla {event.ticker} ({event.event_type})"
+                ),
+            )
+        elif ql == PriorityLevel.IGNORE:
+            return PipelineDecision(
+                run_news=False,
+                run_tavily=False,
+                run_ai=False,
+                reason=(
+                    f"IGNORE — duplikat dla {event.ticker} ({event.event_type})"
+                ),
+            )
+        else:
+            # Unknown quality_level — treat as IGNORE (safety default)
+            return PipelineDecision(
+                run_news=False,
+                run_tavily=False,
+                run_ai=False,
+                reason=f"UNKNOWN quality_level={ql} — przerwanie",
+            )
 
     def __repr__(self) -> str:
         return "<DecisionEngine>"

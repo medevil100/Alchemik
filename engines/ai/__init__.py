@@ -22,6 +22,7 @@ from .analyzer import NewsAnalyzer
 from .decision_engine import DecisionEngine
 from .pipeline import AIPipeline
 from .prompt_builder import PromptBuilder
+from data.models.pipeline_decision import PipelineDecision
 
 
 @dataclass

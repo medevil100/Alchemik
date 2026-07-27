@@ -19,3 +19,5 @@ twilio
 streamlit-autorefresh
 schedule
 matplotlib
+fastapi
+uvicorn

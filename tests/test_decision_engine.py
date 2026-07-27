@@ -264,5 +264,141 @@ class TestDecisionEngineIntegration(unittest.TestCase):
         self.assertIn("MarketEvent", event.ai_context["reasoning"])
 
 
+# ---------------------------------------------------------------------------
+# ETAP 7.4 — PipelineDecision tests
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionEngineDecidePipeline(unittest.TestCase):
+    """ETAP 7.4: DecisionEngine.decide_pipeline() tests."""
+
+    def setUp(self):
+        self.engine = DecisionEngine()
+
+    def _make_event_with_quality(self, quality_level) -> MarketEvent:
+        """Create a minimal MarketEvent with a specific quality_level."""
+        from data.models.event_enums import PriorityLevel
+        event = MarketEvent.create_new(
+            ticker="TEST.WA",
+            market="GPW",
+            instrument_type=InstrumentType.STOCK_GPW,
+        )
+        event.set_detection(
+            event_family=EventFamily.PRICE,
+            event_category="Cenowe",
+            event_type="PRICE_SURGE",
+            priority_raw=PriorityLevel.HIGH,
+            confidence_level=0.85,
+            detection_source="Price Event Detector",
+            event_owner=EventOwner.TechnicalEngine,
+            price_data=PriceData(
+                open=100.0, high=110.0, low=98.0, close=108.0,
+                prev_close=100.0, change_pct=8.0, change_abs=8.0,
+            ),
+        )
+        event.quality_level = quality_level
+        return event
+
+    # --- CRITICAL ---
+
+    def test_critical_triggers_all(self):
+        """CRITICAL quality_level → run_news, run_tavily, run_ai all True."""
+        event = self._make_event_with_quality(PriorityLevel.CRITICAL)
+        decision = self.engine.decide_pipeline(event)
+
+        self.assertTrue(decision.run_news)
+        self.assertTrue(decision.run_tavily)
+        self.assertTrue(decision.run_ai)
+        self.assertIn("CRITICAL", decision.reason)
+
+    # --- HIGH ---
+
+    def test_high_triggers_news_and_ai(self):
+        """HIGH quality_level → run_news=True, run_ai=True, run_tavily=False."""
+        event = self._make_event_with_quality(PriorityLevel.HIGH)
+        decision = self.engine.decide_pipeline(event)
+
+        self.assertTrue(decision.run_news)
+        self.assertFalse(decision.run_tavily)
+        self.assertTrue(decision.run_ai)
+        self.assertIn("HIGH", decision.reason)
+
+    # --- MEDIUM ---
+
+    def test_medium_triggers_news_only(self):
+        """MEDIUM quality_level → only run_news=True."""
+        event = self._make_event_with_quality(PriorityLevel.MEDIUM)
+        decision = self.engine.decide_pipeline(event)
+
+        self.assertTrue(decision.run_news)
+        self.assertFalse(decision.run_tavily)
+        self.assertFalse(decision.run_ai)
+        self.assertIn("MEDIUM", decision.reason)
+
+    # --- LOW ---
+
+    def test_low_triggers_nothing(self):
+        """LOW quality_level → all flags False (archive only)."""
+        event = self._make_event_with_quality(PriorityLevel.LOW)
+        decision = self.engine.decide_pipeline(event)
+
+        self.assertFalse(decision.run_news)
+        self.assertFalse(decision.run_tavily)
+        self.assertFalse(decision.run_ai)
+        self.assertIn("LOW", decision.reason)
+
+    # --- IGNORE ---
+
+    def test_ignore_triggers_nothing(self):
+        """IGNORE quality_level → all flags False (duplicate)."""
+        event = self._make_event_with_quality(PriorityLevel.IGNORE)
+        decision = self.engine.decide_pipeline(event)
+
+        self.assertFalse(decision.run_news)
+        self.assertFalse(decision.run_tavily)
+        self.assertFalse(decision.run_ai)
+        self.assertIn("IGNORE", decision.reason)
+
+    # --- Return type ---
+
+    def test_returns_pipeline_decision(self):
+        """decide_pipeline() must return PipelineDecision."""
+        from data.models.pipeline_decision import PipelineDecision
+        event = self._make_event_with_quality(PriorityLevel.HIGH)
+        decision = self.engine.decide_pipeline(event)
+        self.assertIsInstance(decision, PipelineDecision)
+
+    # --- Reason contains ticker and event_type ---
+
+    def test_reason_contains_ticker_and_event_type(self):
+        """The reason field should mention the event's ticker and event_type."""
+        event = self._make_event_with_quality(PriorityLevel.CRITICAL)
+        decision = self.engine.decide_pipeline(event)
+        self.assertIn(event.ticker, decision.reason)
+        self.assertIn(event.event_type, decision.reason)
+
+    # --- Compatibility: process_event still works ---
+
+    def test_process_event_still_works(self):
+        """Existing process_event() must still work after ETAP 7.4 changes."""
+        event = self._make_event_with_quality(PriorityLevel.HIGH)
+        signal = self.engine.process_event(event)
+        self.assertIsInstance(signal, AISignal)
+        self.assertIsNotNone(signal.reasoning)
+
+    def test_process_data_still_works(self):
+        """Existing process_data() adapter must still work."""
+        event = self._make_event_with_quality(PriorityLevel.HIGH)
+        signal = self.engine.process_data({"event": event})
+        self.assertIsInstance(signal, AISignal)
+
+    def test_process_data_legacy_still_works(self):
+        """Legacy process_data(dict) must still work."""
+        signal = self.engine.process_data({
+            "symbol": "TEST", "technical": {"rsi": 50}, "news": [],
+        })
+        self.assertIsInstance(signal, AISignal)
+
+
 if __name__ == "__main__":
     unittest.main()

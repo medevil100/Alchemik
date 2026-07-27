@@ -21,3 +21,5 @@ Przed wykonaniem jakiejkolwiek zmiany:
 11. Jeżeli do wykonania zadania nie jest potrzebny cały projekt, nie analizuj całego repozytorium. Korzystaj wyłącznie z plików bezpośrednio związanych z bieżącym zadaniem oraz ich zależności.
 12. Szanuj zamrożoną architekturę projektu. Wprowadzaj wyłącznie zmiany wymagane przez aktualne zadanie. Nie wykonuj dodatkowych refaktoryzacji ani zmian „przy okazji".
 13. Każdą decyzję implementacyjną opieraj na obowiązującej dokumentacji projektu. W przypadku sprzeczności dokumentacja ma pierwszeństwo przed własnymi założeniami.
+
+14. Dla projektu ALCHEMIK wszystkie polecenia Python, pip, pytest i narzędzia uruchamiane przez Python muszą używać interpretera: C:\alchemik\.venv\Scripts\python.exe. Zabronione jest używanie systemowego polecenia `python`, `pip` lub `pytest` bez pełnej ścieżki do projektowego interpretera.

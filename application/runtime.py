@@ -19,6 +19,7 @@ class RuntimeService:
                  deduplicator=None,
                  alert_builder=None,
                  alert_dispatcher=None,
+                 telegram_channel=None,
                  instrument_metadata: Optional[Dict[str, Tuple[str, InstrumentType]]] = None):
         self.hunter_engine = hunter_engine
         self.master_engine = master_engine
@@ -27,6 +28,7 @@ class RuntimeService:
         self.deduplicator = deduplicator
         self.alert_builder = alert_builder
         self.alert_dispatcher = alert_dispatcher
+        self.telegram_channel = telegram_channel
         self._instrument_metadata = instrument_metadata
 
     def _get_instrument_metadata(self, ticker: str) -> Tuple[str, InstrumentType]:
@@ -138,32 +140,36 @@ class RuntimeService:
                                 ev.priority_raw.value if hasattr(ev.priority_raw, 'value') else ev.priority_raw,
                             )
 
-                    # Process alerts if alert components are available and no MasterEngine errors
-                    if not isinstance(result, Exception) and self.alert_builder and self.alert_dispatcher:
-                        try:
-                            if self.alert_builder.should_alert(result):
-                                try:
-                                    alert_message = self.alert_builder.build_alert(result)
+                    # Process alerts if alert components are available and no MasterEngine errors.
+                    # Alerts are only built for MarketEvents with quality_level other than IGNORE/LOW.
+                    # There is NO fallback without MarketEvent — documentation
+                    # (ETAP_7_PLAN.md §7.5, Kontrakt_Zdarzen_Rynkowych.md ETAP 11)
+                    # requires MarketEvent + FinalAnalysisResult as input.
+                    if not isinstance(result, Exception) and self.alert_builder and self.alert_dispatcher and detected_events:
+                        for ev in detected_events:
+                            ql_value = None
+                            if hasattr(ev, 'quality_level') and ev.quality_level is not None:
+                                ql_value = getattr(ev.quality_level, 'value', str(ev.quality_level))
+
+                            if ql_value in ("IGNORE", "LOW", "ignore", "low"):
+                                continue
+
+                            try:
+                                if self.alert_builder.should_alert(result, event=ev):
+                                    alert_message = self.alert_builder.build_alert(result, event=ev)
                                     try:
-                                        self.alert_dispatcher.dispatch(alert_message)
-                                    except Exception as e:
-                                        errors.append(CandidateError(
-                                            candidate_id=candidate.instrument_id,
-                                            stage="Alert Dispatcher",
-                                            message=str(e)
-                                        ))
-                                except Exception as e:
-                                    errors.append(CandidateError(
-                                        candidate_id=candidate.instrument_id,
-                                        stage="Alert Builder",
-                                        message=str(e)
-                                    ))
-                        except Exception as e:
-                            errors.append(CandidateError(
-                                candidate_id=candidate.instrument_id,
-                                stage="Alert Pipeline",
-                                message=str(e)
-                            ))
+                                        channels = [self.telegram_channel] if self.telegram_channel else []
+                                        self.alert_dispatcher.dispatch(alert_message, channels)
+                                    except Exception as dispatch_err:
+                                        logger.warning(
+                                            "Alert dispatch failed for %s: %s",
+                                            candidate.instrument_id, str(dispatch_err),
+                                        )
+                            except Exception as build_err:
+                                logger.warning(
+                                    "Alert builder failed for %s: %s",
+                                    candidate.instrument_id, str(build_err),
+                                )
 
                 except Exception as e:
                     errors.append(CandidateError(

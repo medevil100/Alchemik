@@ -16,6 +16,7 @@ from .history_entry import HistoryEntry
 from .price_data import PriceData
 from .volume_data import VolumeData
 from .market_event import MarketEvent, CURRENT_SCHEMA_VERSION
+from .pipeline_decision import PipelineDecision
 
 __all__ = [
     'AnalysisResult',
@@ -37,4 +38,5 @@ __all__ = [
     'VolumeData',
     'MarketEvent',
     'CURRENT_SCHEMA_VERSION',
+    'PipelineDecision',
 ]

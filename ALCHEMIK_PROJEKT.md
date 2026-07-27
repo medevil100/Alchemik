@@ -4,10 +4,10 @@
 
 | Atrybut | Wartość |
 |---------|---------|
-| Data | 22.07.2026 |
-| Wersja | 1.0 |
-| Status | **AKTUALNY — zgodny z kodem** |
-| Bazuje na | rzeczywistym stanie repozytorium (commit `2311de6`) |
+| Data | 27.07.2026 |
+| Wersja | 1.1 |
+| Status | **AKTUALNY — zgodny z kodem (ETAP 7.4)** |
+| Bazuje na | rzeczywistym stanie repozytorium (commit `6670061`, stan roboczy ETAPU 7.4) |
 
 ---
 
@@ -60,6 +60,8 @@ Kluczowe założenia:
 ├─────────────────────────────────────────────────────────────┤
 │                    SILNIKI (engines/)                        │
 │  technical │ news │ ai │ ranking │ risk │ hunter │ analyst  │
+│  master │ quality │ composer │ detectors │ price_detector   │
+│  volume_detector                                              │
 ├─────────────────────────────────────────────────────────────┤
 │                    DANE (data/)                              │
 │  yahoo │ tavily │ cache │ models                            │
@@ -74,6 +76,11 @@ Kluczowe założenia:
 ```
 Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 ```
+
+**Decyzje architektoniczne ETAPU 7:**
+- **MasterEngine pozostaje głównym orkiestratorem** — wywołuje sekwencyjnie silniki, koordynuje przepływ danych
+- **TechnicalIntegrator wyłącznie dla Manual Analysis** — nie jest częścią automatycznego pipeline'u Runtime
+- **Tavily po InitialAnalysisResult** — wyszukiwanie Tavily uruchamiane po wstępnej analizie, przed AI
 
 ---
 
@@ -109,12 +116,28 @@ Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 ### 5.8 Master Engine (`engines/master/`)
 - **Cel**: Orkiestracja pipeline'u analizy dla jednego instrumentu
 - **Sekwencja**: Technical → News → Decision → Ranking → Risk → Hunter → Analyst
+- **Uwaga**: MasterEngine pozostaje głównym orkiestratorem w architekturze ETAPU 7
 
 ### 5.9 Price Detector (`engines/price_detector/`)
 - **Cel**: Wykrywanie zdarzeń cenowych (w ramach TechnicalEngine)
 
 ### 5.10 Volume Detector (`engines/volume_detector/`)
 - **Cel**: Wykrywanie zdarzeń wolumenowych (w ramach TechnicalEngine)
+
+### 5.11 Detector Framework (`engines/detectors/`)
+- **Cel**: Wspólny interfejs dla wszystkich detektorów (BaseDetector, DetectionContext, DetectionResult, DetectorRegistry, DetectorOrchestrator)
+- **Detektory**: Technical, Fundamental, Corporate, Regulatory, Macro, ETF, Derivatives, Sentiment, System (+ istniejące Price i Volume)
+- **Status**: ✅ Zamrożony (FAZA 2 ETAPU 6)
+
+### 5.12 Quality Engine (`engines/quality/`) — ETAP 7.2
+- **Cel**: Ocena jakości zdarzeń — przypisywanie `quality_level` (Critical/High/Medium/Low/Ignore)
+- **Konfiguracja**: `config/quality.py` — mapowanie `priority_raw` → `quality_level` dla GPW/USA/ETF, reguły promocji Composite
+- **Status**: 🔄 ETAP 7.2 (zaimplementowany, nie zamrożony)
+
+### 5.13 Composer Engine (`engines/composer/`) — ETAP 7.3
+- **Cel**: Scalanie pokrewnych zdarzeń w Composite Events
+- **Konfiguracja**: `config/composer.py` — okno czasowe scalania (60s), maksymalna liczba zdarzeń składowych (10)
+- **Status**: 🔄 ETAP 7.3 (zaimplementowany, nie zamrożony)
 
 ---
 
@@ -124,7 +147,7 @@ Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 |-------|------|
 | `data/yahoo/` | YahooFinanceFetcher, wyjątki |
 | `data/tavily/` | Integracja z API Tavily |
-| `data/models/` | Modele danych: MarketEvent, PriceData, VolumeData, HistoryEntry, AnalysisResult, RankingResult, RiskResult, HunterResult, FinalAnalysisResult, AISignal, CompanyInfo, NewsItem, MarketData, EventEnums |
+| `data/models/` | Modele danych: MarketEvent, PriceData, VolumeData, HistoryEntry, AnalysisResult, RankingResult, RiskResult, HunterResult, FinalAnalysisResult, AISignal, CompanyInfo, NewsItem, MarketData, EventEnums, CompositeEvent, PipelineDecision |
 
 ### Modele danych — szczegóły
 
@@ -145,6 +168,8 @@ Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 | FullRanking | `data/models/full_ranking.py` | Pełny ranking |
 | RiskResult | `data/models/risk_result.py` | Wynik oceny ryzyka |
 | HunterResult | `data/models/hunter_result.py` | Wynik skanowania |
+| CompositeEvent | `data/models/composite_event.py` | Model zdarzeń złożonych — kontener danych z walidacją, serializacją i factory method `create()` (ETAP 7.3) |
+| PipelineDecision | `data/models/pipeline_decision.py` | Decyzja o uruchomieniu pipeline'u (News/Tavily/AI) na podstawie quality_level (ETAP 7.4) |
 
 ### Kontrakt zdarzeń rynkowych
 
@@ -171,6 +196,7 @@ Obiekt `MarketEvent` zawiera 27 pól, przechodzi przez 13 etapów cyklu życia, 
 | `sqlite_history_repository.py` | Implementacja SQLite HistoryRepository |
 | `read_service.py` | RuntimeReadService — odczyt danych |
 | `dashboard_read_service.py` | DashboardReadService — agregacje dashboardowe |
+| `technical_integrator.py` | TechnicalIntegrator — warstwa integracyjna MarketEvent → TechnicalEngine. Wyłącznie do Manual Analysis. Używa Public API, nie modyfikuje zamrożonych silników. (ETAP 7) |
 | `models.py` | Modele warstwy aplikacyjnej |
 | `channels/telegram_channel.py` | Kanał Telegram |
 
@@ -267,13 +293,13 @@ Szczegółowa architektura frontendu: `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md`
 ## 12. AI
 
 **Komponenty**:
-- `engines/ai/decision_engine.py` — decyzja o użyciu AI
+- `engines/ai/decision_engine.py` — decyzja o użyciu AI. Rozbudowany w ETAPIE 7.4 o metodę `decide_pipeline(event) -> PipelineDecision`.
 - `engines/ai/pipeline.py` — pipeline AI
 - `engines/ai/analyzer.py` — analiza AI
 - `engines/ai/ai_provider.py` — provider AI (OpenAI)
 - `engines/ai/prompt_builder.py` — budowanie promptów
 
-**Zasada**: AI jest uruchamiana wyłącznie dla zdarzeń o priorytecie Critical/High, wymagających interpretacji kontekstu.
+**Zasada**: AI jest uruchamiana wyłącznie dla zdarzeń o priorytecie Critical/High, wymagających interpretacji kontekstu. Decyzję podejmuje `DecisionEngine.decide_pipeline()` na podstawie `quality_level`.
 
 ---
 
@@ -286,11 +312,41 @@ Szczegółowa architektura frontendu: `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md`
 
 **Warunki wysyłki**: final_rating ≥ 70, confidence ≥ 70%, rekomendacja STRONG_BUY lub BUY.
 
+### 13.1 Decyzja architektoniczna — ETAP 7.5 — Integracja Telegram
+
+**Status**: ZATWIERDZONA
+
+ETAP 7.5 obejmuje pełną integrację systemu alertów z `TelegramChannel`.
+
+**Zakres ETAPU 7.5:**
+
+- `AlertBuilder` podejmuje decyzję o wygenerowaniu alertu.
+- `AlertDispatcher` przekazuje alert do `TelegramChannel`.
+- `TelegramChannel` wysyła wiadomość do Telegram API.
+- Runtime kontynuuje pracę nawet w przypadku błędu wysyłki.
+- Alert może zawierać pole „AI Rating" będące wynikiem analizy AI (np. BUY, HOLD, SELL), jednak nie stanowi ono rekomendacji inwestycyjnej ani polecenia wykonania transakcji. Ostateczna decyzja zawsze należy do użytkownika.
+
+**Świadomie NIE wchodzi w zakres ETAPU 7.5:**
+
+- zapisywanie `telegram_message_id`,
+- zapisywanie identyfikatora wiadomości Telegram w `MarketEvent`,
+- zapisywanie identyfikatora wiadomości w `metadata`,
+- zapisywanie informacji o wiadomości w `HistoryRepository`,
+- zapisywanie informacji o wiadomości w `SQLite`.
+
+Jest to świadoma decyzja architektoniczna, a nie brak implementacji.
+
+**Powód:**
+
+Na obecnym etapie nie została jeszcze zaprojektowana docelowa architektura przechowywania historii wysłanych powiadomień. W późniejszych etapach może zostać wprowadzony dedykowany model (np. `AlertRecord`, `NotificationRecord`, `AlertHistory`) lub inne rozwiązanie wynikające z dalszego rozwoju projektu.
+
+Do tego czasu ETAP 7.5 odpowiada wyłącznie za poprawne wygenerowanie i wysłanie alertu przez Telegram.
+
 ---
 
 ## 14. Testy
 
-**Backend**: 28 plików testowych w `tests/`
+**Backend**: 46 plików testowych w `tests/`
 **Frontend**: 10 plików testowych w `dashboard/src/` (w podkatalogach `api/__tests__/`, `components/__tests__/`, `hooks/__tests__/`, `views/__tests__/`, `__tests__/`)
 
 ### Lista testów backendu
@@ -301,25 +357,43 @@ Szczegółowa architektura frontendu: `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md`
 | `test_alert_builder.py` | Alert builder |
 | `test_alert_dispatcher.py` | Alert dispatcher |
 | `test_analyst_engine.py` | Analyst engine |
+| `test_composer_engine.py` | ComposerEngine — scalanie zdarzeń (ETAP 7.3) |
+| `test_composite_event.py` | Model CompositeEvent (ETAP 7.3) |
+| `test_corporate_detector.py` | Corporate Event Detector |
 | `test_dashboard_api.py` | Dashboard API |
 | `test_dashboard_repository.py` | Dashboard repository |
 | `test_dashboard_service.py` | Dashboard service |
-| `test_decision_engine.py` | Decision engine |
+| `test_decision_engine.py` | Decision engine (rozbudowany w ETAPIE 7.4) |
+| `test_derivatives_detector.py` | Derivatives Event Detector |
+| `test_detector_orchestrator.py` | DetectorOrchestrator |
+| `test_detector_registry.py` | DetectorRegistry |
+| `test_detectors_base.py` | BaseDetector, DetectionContext, DetectionResult |
+| `test_etf_detector.py` | ETF Event Detector |
+| `test_fundamental_detector.py` | Fundamental Event Detector |
 | `test_history_repository.py` | History repository |
 | `test_hunter_engine.py` | Hunter engine |
+| `test_macro_detector.py` | Macro Event Detector |
 | `test_market_event_models.py` | Market event models |
 | `test_market_scanner.py` | Market scanner |
+| `test_master_detector_integration.py` | Integracja detektorów z MasterEngine |
 | `test_master_engine.py` | Master engine |
 | `test_master_engine_e2e.py` | Master engine E2E |
 | `test_opportunity_deduplicator.py` | Opportunity deduplicator |
+| `test_pipeline_decision.py` | PipelineDecision i decide_pipeline() (ETAP 7.4) |
 | `test_price_detector.py` | Price detector |
+| `test_quality_engine.py` | QualityEngine — ocena jakości (ETAP 7.2) |
 | `test_ranking_engine.py` | Ranking engine |
 | `test_read_api.py` | Read API |
+| `test_regulatory_detector.py` | Regulatory Event Detector |
 | `test_risk_engine.py` | Risk engine |
 | `test_runtime.py` | Runtime |
 | `test_scheduler.py` | Scheduler |
+| `test_sentiment_detector.py` | Sentiment & News Event Detector |
 | `test_sqlite_history_repository.py` | SQLite history repository |
 | `test_static_instrument_source.py` | Static instrument source |
+| `test_system_detector.py` | System Event Detector |
+| `test_technical_detector.py` | Technical Event Detector |
+| `test_technical_integrator.py` | TechnicalIntegrator — integracja MarketEvent → TechnicalEngine (ETAP 7) |
 | `test_telegram_channel.py` | Telegram channel |
 | `test_universe.py` | Universe |
 | `test_volume_detector.py` | Volume detector |
@@ -354,17 +428,26 @@ c:\alchemik\
 │   ├── sqlite_history_repository.py
 │   ├── read_service.py
 │   ├── dashboard_read_service.py
+│   ├── technical_integrator.py  # MarketEvent → TechnicalEngine (Manual Analysis, ETAP 7)
 │   ├── models.py
 │   └── channels/
 │       └── telegram_channel.py
 │
 ├── config/                      # Konfiguracje
 │   ├── analyst.py
+│   ├── composer.py             # Konfiguracja ComposerEngine (ETAP 7.3)
+│   ├── corporate_events.py     # Progi Corporate Event Detector
+│   ├── etf_events.py           # Progi ETF Event Detector
+│   ├── fundamental_events.py   # Progi Fundamental Event Detector
 │   ├── hunter.py
 │   ├── indicators.py
+│   ├── macro_events.py         # Progi Macro Event Detector
+│   ├── price_detector.py
+│   ├── quality.py              # Konfiguracja QualityEngine (ETAP 7.2)
 │   ├── ranking.py
 │   ├── risk.py
-│   ├── price_detector.py
+│   ├── sentiment_events.py     # Progi Sentiment & News Event Detector
+│   ├── technical_events.py     # Progi Technical Event Detector
 │   └── volume_detector.py
 │
 ├── dashboard/                   # Frontend React
@@ -385,12 +468,16 @@ c:\alchemik\
 │   ├── cache/
 │   ├── runtime/                 # Baza SQLite
 │   ├── models/                  # Modele danych
+│   │   ├── composite_event.py   # Model CompositeEvent (ETAP 7.3)
+│   │   └── pipeline_decision.py # Model PipelineDecision (ETAP 7.4)
 │   ├── tavily/                  # Integracja Tavily
 │   └── yahoo/                   # Integracja Yahoo Finance
 │
 ├── docs/                        # Dokumentacja
 │   ├── API_README.md
 │   ├── ETAP_5_ARCHITEKTURA_FRONTENDU.md
+│   ├── ETAP_6_ARCHITEKTURA.md
+│   ├── ETAP_7_PLAN.md
 │   ├── FILOZOFIA_ALCHEMIKA.md
 │   ├── Hierarchia_Zdarzen_Rynkowych.md
 │   ├── INSTRUKCJA_DLA_CLINE.md
@@ -403,10 +490,13 @@ c:\alchemik\
 ├── engines/                     # Silniki
 │   ├── ai/                     # AI Engine
 │   ├── analyst/                # Analyst Engine
+│   ├── composer/               # ComposerEngine — scalanie zdarzeń (ETAP 7.3)
+│   ├── detectors/              # Framework detektorów (BaseDetector, DetectorOrchestrator)
 │   ├── hunter/                 # Hunter Engine
-│   ├── master/                 # Master Engine
+│   ├── master/                 # Master Engine (główny orkiestrator)
 │   ├── news/                   # News Engine
 │   ├── price_detector/         # Price Detector
+│   ├── quality/                # QualityEngine — ocena jakości zdarzeń (ETAP 7.2)
 │   ├── ranking/                # Ranking Engine
 │   ├── risk/                   # Risk Engine
 │   ├── technical/              # Technical Engine
@@ -423,7 +513,7 @@ c:\alchemik\
 │   ├── test_persistence_restart.py
 │   └── test_telegram_integration.py
 │
-├── tests/                       # Testy (28 plików)
+├── tests/                       # Testy (46 plików)
 │
 ├── cache/                       # Cache (pusty — znacznik)
 ├── database/                    # Database (pusty — znacznik)
@@ -465,20 +555,6 @@ c:\alchemik\
 - API Client (client, config, api, types)
 - **Commit**: `2311de6`
 
-### FAZA 2 ETAPU 6 — Implementacja wszystkich detektorów zdarzeń rynkowych i integracja z MasterEngine
-- Implementacja frameworka detektorów: `BaseDetector`, `DetectionContext`, `DetectionResult`, `DetectorRegistry`, `DetectorOrchestrator`
-- Implementacja 11 detektorów: Technical, Fundamental, Corporate, Regulatory, Macro, ETF, Derivatives, Sentiment, System (+ istniejące Price i Volume)
-- Konfiguracje progów: `technical_events.py`, `fundamental_events.py`, `corporate_events.py`, `macro_events.py`, `etf_events.py`, `sentiment_events.py`
-- Integracja wszystkich detektorów z `MasterEngine` przez `DetectorOrchestrator`
-- Testy jednostkowe i integracyjne dla wszystkich detektorów
-- **Status**: ✅ Zakończony i zamrożony (23.07.2026)
-
----
-
-## 17. Zamrożone etapy
-
-Wszystkie etapy od ETAP 1 do ETAP 5 oraz FAZA 1 i FAZA 2 ETAPU 6 są zamrożone. Zgodnie z zasadami projektu, architektura rdzenia nie może być modyfikowana bez świadomej decyzji projektowej.
-
 ### FAZA 1 ETAPU 6 — Integracja MarketEvent jako centralnego obiektu pipeline
 - `DecisionEngine.process_event(MarketEvent)` jako kanoniczny kontrakt wejściowy
 - Mapowanie `technical_context` z `AnalysisResult.indicators` do `MarketEvent`
@@ -493,7 +569,13 @@ Wszystkie etapy od ETAP 1 do ETAP 5 oraz FAZA 1 i FAZA 2 ETAPU 6 są zamrożone.
 - Konfiguracje progów dla 6 rodzin zdarzeń
 - Integracja z `MasterEngine` przez `DetectorOrchestrator`
 - Testy jednostkowe i integracyjne
-- **Status**: ✅ Zakończony i zamrożony (23.07.2026)
+- **Status**: ✅ Zakończony i zamrożony (27.07.2026, commit `6670061`)
+
+---
+
+## 17. Zamrożone etapy
+
+Wszystkie etapy od ETAP 1 do ETAP 6 (FAZA 1 i FAZA 2) są zamrożone. Zgodnie z zasadami projektu, architektura rdzenia nie może być modyfikowana bez świadomej decyzji projektowej.
 
 ---
 
@@ -508,29 +590,44 @@ Wszystkie etapy od ETAP 1 do ETAP 5 oraz FAZA 1 i FAZA 2 ETAPU 6 są zamrożone.
 | ETAP 5 | ✅ Zamrożony | Frontend React |
 | FAZA 1 ETAPU 6 | ✅ Zamrożony | Integracja MarketEvent jako centralnego obiektu pipeline |
 | FAZA 2 ETAPU 6 | ✅ Zamrożony | Implementacja wszystkich detektorów i integracja z MasterEngine |
+| ETAP 7 | 🔄 W trakcie | Domknięcie cyklu życia zdarzenia (Quality, Composite, DecisionEngine, Alerty, Dashboard) |
+| ├ 7.1 Specyfikacja | ✅ Ukończony | `docs/ETAP_7_PLAN.md` |
+| ├ 7.2 Quality Assessment | ✅ Zaimplementowany | `QualityEngine`, `config/quality.py` |
+| ├ 7.3 Composite Events | ✅ Zaimplementowany | `ComposerEngine`, `CompositeEvent`, `config/composer.py` |
+| ├ 7.4 DecisionEngine | ✅ Zaimplementowany | `decide_pipeline()`, `PipelineDecision` |
+| ├ 7.5 Alerty | ✅ Zaimplementowany | Rozbudowa AlertBuilder i AlertDispatcher + integracja TelegramChannel |
+| ├ 7.5a Testy Runtime | ✅ Zaimplementowany | Pełne pokrycie testowe integracji Runtime z alertami |
+| ├ 7.5b Porządkowanie repo | ✅ Zakończony | Czyszczenie staging area, .gitignore, przygotowanie commita |
+| ├ 7.6 Dashboard | ❌ Nierozpoczęty | Rozbudowa frontendu |
+| └ 7.7 Testy i zamrożenie | ❌ Nierozpoczęty | Testy integracyjne + commit |
 
 ---
 
 ## 19. Aktualny stan projektu
 
-- Backend: kompletny, zamrożony
+- Backend: kompletny, zamrożony (ETAP 1–6)
 - Frontend: kompletny, zamrożony
 - API: kompletne, zamrożone
 - FAZA 1 ETAPU 6: zakończony i zamrożony (23.07.2026)
-- FAZA 2 ETAPU 6: zakończony i zamrożony (23.07.2026)
+- FAZA 2 ETAPU 6: zakończony i zamrożony (27.07.2026)
 - Detektory: 11 detektorów — wszystkie zaimplementowane, przetestowane i zamrożone
-- Testy: testy jednostkowe i integracyjne dla wszystkich detektorów + istniejące testy projektu
-- Dokumentacja: zaktualizowana
-- Ostatnia aktualizacja: 23.07.2026
+- ETAP 7.1–7.4: zaimplementowany, nie zamrożony
+- ETAP 7.5 + 7.5a + 7.5b: zaimplementowany
+- ETAP 7.6–7.7: nierozpoczęty
+- Prace zatrzymane na ETAPIE 7.4 (wznowione dla ETAPU 7.5)
+- Testy: 46 plików testowych backendu, 10 frontendu
+- Dokumentacja: zaktualizowana do stanu ETAPU 7.4
+- Ostatnia aktualizacja: 27.07.2026
 - Branch: `master`
 
 ---
 
 ## 20. Następny etap
 
-**ETAP 7** — rozbudowa alertów, dashboard zdarzeniowy, ocena jakości zdarzeń, scalanie zdarzeń (Composite Events).
+**ETAP 7.6** — rozbudowa dashboardu o widoki zdarzeniowe.
 
-Szczegóły zostaną określone w dokumentacji planistycznej ETAPU 7.
+Szczegóły w `docs/ETAP_7_PLAN.md` §7.6.
+
 ---
 
 ## 21. Dokumenty projektu
@@ -548,6 +645,7 @@ Szczegóły zostaną określone w dokumentacji planistycznej ETAPU 7.
 | API README | `docs/API_README.md` | Dokumentacja API |
 | ETAP 5 Frontend | `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md` | Architektura frontendu |
 | ETAP 6 | `docs/ETAP_6_ARCHITEKTURA.md` | Plan ETAPU 6 |
+| ETAP 7 Plan | `docs/ETAP_7_PLAN.md` | Plan ETAPU 7 |
 | Check point | `ALCHEMIK_CHECK.md` | Status projektu |
 | Projekt | `ALCHEMIK_PROJEKT.md` | Główna dokumentacja (ten plik) |
 

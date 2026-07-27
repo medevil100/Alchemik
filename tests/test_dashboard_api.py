@@ -63,10 +63,22 @@ def _make_event_dict(
     }
 
 
+# Suppress Starlette 1.x deprecation warning emitted during import of
+# fastapi.testclient.  The project does not depend on starlette/testclient
+# directly; the warning fires when starlette detects httpx v1 on the path.
+import warnings
+from starlette.exceptions import StarletteDeprecationWarning
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Using .*httpx.* with .*starlette\.testclient.* is deprecated",
+    category=StarletteDeprecationWarning,
+)
+
 # Check if FastAPI TestClient is available
 try:
-    from fastapi.testclient import TestClient
-    from application.api_entrypoint import app
+    from fastapi.testclient import TestClient  # noqa: E402
+    from application.api_entrypoint import app  # noqa: E402
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False

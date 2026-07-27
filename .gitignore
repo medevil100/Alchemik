@@ -46,6 +46,12 @@ dashboard/tsc_output.txt
 *.tmp
 *.temp
 
+# Root package-lock.json (generated accidentally — no root package.json)
+/package-lock.json
+
+# VS Code workspace settings (machine-local paths)
+.vscode/
+
 # OS
 Thumbs.db
 .DS_Store

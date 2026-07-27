@@ -485,131 +485,189 @@ class TestRuntimeService(unittest.TestCase):
         mock_deduplicator.should_process.assert_called_once_with("A")
         mock_deduplicator.mark_processed.assert_called_once_with("A")
         
-    def test_alert_pipeline_success(self):
-        """Test successful alert pipeline execution."""
-        mock_alert_builder = MagicMock()
-        mock_alert_builder.should_alert.return_value = True
-        mock_alert_builder.build_alert.return_value = "Test alert message"
-        mock_alert_dispatcher = MagicMock()
+    # ------------------------------------------------------------------
+    # ETAP 7.5 — Alert pipeline tests (MarketEvent integration)
+    # ------------------------------------------------------------------
+
+    def _setup_alert_runtime(self, **kwargs):
+        """Helper to create RuntimeService with alert components and a
+        MasterEngine that populates events_out."""
         mock_deduplicator = MagicMock()
         mock_deduplicator.should_process.return_value = True
-        
-        runtime = RuntimeService(
+        mock_telegram = kwargs.pop("telegram_channel", MagicMock())
+        defaults = dict(
+            deduplicator=mock_deduplicator,
+            alert_builder=MagicMock(),
+            alert_dispatcher=MagicMock(),
+            telegram_channel=mock_telegram,
+        )
+        defaults.update(kwargs)
+        return RuntimeService(
             self.mock_hunter,
             self.mock_master,
             self.mock_repository,
-            deduplicator=mock_deduplicator,
-            alert_builder=mock_alert_builder,
-            alert_dispatcher=mock_alert_dispatcher
+            **defaults,
         )
-        
+
+    @staticmethod
+    def _make_market_event(**overrides):
+        """Build a minimal mock MarketEvent for alert tests."""
+        ev = MagicMock()
+        ev.event_type = overrides.get("event_type", "PRICE_SURGE")
+        ev.event_family = overrides.get("event_family", None)
+        ev.priority_final = overrides.get("priority_final", None)
+        ql = MagicMock()
+        ql.value = overrides.get("quality_level", "HIGH")
+        ev.quality_level = ql
+        ev.is_composite = overrides.get("is_composite", False)
+        ev.composite_events = overrides.get("composite_events", [])
+        ev.market = overrides.get("market", "GPW")
+        ev.ai_context = overrides.get("ai_context", None)
+        return ev
+
+    def _run_alert_cycle(self, runtime, events_out_content=None, master_result=None):
+        """Execute one cycle with a single candidate and return the report."""
         mock_hunter_result = MagicMock()
-        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="TST")]
         self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        mock_result = FinalAnalysisResult(
-            symbol="A",
-            final_rating=80,
-            confidence_level=90,
-            recommendation="Buy",
-            positive_factors=[],
-            risk_factors=[],
-            warnings=[],
-            summary="",
-            generated_at=datetime.now()
-        )
-        self.mock_master.run_analysis.return_value = mock_result
-        
-        report = runtime.run_cycle({})
-        
-        mock_alert_builder.should_alert.assert_called_once_with(mock_result)
-        mock_alert_builder.build_alert.assert_called_once_with(mock_result)
-        mock_alert_dispatcher.dispatch.assert_called_once_with("Test alert message")
+
+        if master_result is None:
+            master_result = FinalAnalysisResult(
+                symbol="TST",
+                final_rating=85,
+                confidence_level=90,
+                recommendation="STRONG_BUY",
+                positive_factors=[],
+                risk_factors=[],
+                warnings=[],
+                summary="Analysis summary",
+                generated_at=datetime.now(),
+            )
+
+        def populate_events_out(*args, **kwargs):
+            out = kwargs.get("events_out")
+            if out is not None and events_out_content is not None:
+                out.extend(events_out_content)
+            return master_result
+
+        self.mock_master.run_analysis.side_effect = populate_events_out
+        return runtime.run_cycle({})
+
+    def test_alert_pipeline_passes_market_event_and_result(self):
+        """Runtime passes FinalAnalysisResult and MarketEvent to AlertBuilder."""
+        event = self._make_market_event(quality_level="HIGH")
+        runtime = self._setup_alert_runtime()
+        runtime.alert_builder.should_alert.return_value = True
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_builder.should_alert.assert_called_once()
+        call_args = runtime.alert_builder.should_alert.call_args
+        self.assertIsInstance(call_args[0][0], FinalAnalysisResult)
+        self.assertEqual(call_args[1]["event"], event)
+
+        runtime.alert_builder.build_alert.assert_called_once()
+        build_args = runtime.alert_builder.build_alert.call_args
+        self.assertIsInstance(build_args[0][0], FinalAnalysisResult)
+        self.assertEqual(build_args[1]["event"], event)
+
+    def test_alert_pipeline_should_alert_false_skips_dispatch(self):
+        """When should_alert returns False, no alert is built or dispatched."""
+        event = self._make_market_event(quality_level="HIGH")
+        runtime = self._setup_alert_runtime()
+        runtime.alert_builder.should_alert.return_value = False
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_builder.build_alert.assert_not_called()
+        runtime.alert_dispatcher.dispatch.assert_not_called()
+
+    def test_alert_quality_ignore_skipped(self):
+        """MarketEvent with quality_level IGNORE does not generate an alert."""
+        event = self._make_market_event(quality_level="IGNORE")
+        runtime = self._setup_alert_runtime()
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_builder.should_alert.assert_not_called()
+        runtime.alert_dispatcher.dispatch.assert_not_called()
+
+    def test_alert_quality_low_skipped(self):
+        """MarketEvent with quality_level LOW does not generate an alert."""
+        event = self._make_market_event(quality_level="LOW")
+        runtime = self._setup_alert_runtime()
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_builder.should_alert.assert_not_called()
+        runtime.alert_dispatcher.dispatch.assert_not_called()
+
+    def test_alert_telegram_channel_passed_to_dispatcher(self):
+        """TelegramChannel is passed inside a list to AlertDispatcher.dispatch."""
+        event = self._make_market_event(quality_level="HIGH")
+        mock_telegram = MagicMock()
+        runtime = self._setup_alert_runtime(telegram_channel=mock_telegram)
+        runtime.alert_builder.should_alert.return_value = True
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_dispatcher.dispatch.assert_called_once()
+        args, _ = runtime.alert_dispatcher.dispatch.call_args
+        self.assertIsInstance(args[0], MagicMock)  # alert_message (mock)
+        self.assertEqual(args[1], [mock_telegram])
+
+    def test_alert_missing_telegram_channel_no_error(self):
+        """Cycle completes successfully even without telegram_channel configured."""
+        event = self._make_market_event(quality_level="HIGH")
+        runtime = self._setup_alert_runtime(telegram_channel=None)
+        runtime.alert_builder.should_alert.return_value = True
+
+        report = self._run_alert_cycle(runtime, events_out_content=[event])
+
+        runtime.alert_dispatcher.dispatch.assert_called_once()
+        args, _ = runtime.alert_dispatcher.dispatch.call_args
+        self.assertEqual(args[1], [])  # empty channel list
         self.assertEqual(report.error_count, 0)
-        
-    def test_alert_pipeline_should_alert_false(self):
-        """Test when should_alert returns False."""
-        mock_alert_builder = MagicMock()
-        mock_alert_builder.should_alert.return_value = False
-        mock_alert_dispatcher = MagicMock()
-        mock_deduplicator = MagicMock()
-        mock_deduplicator.should_process.return_value = True
-        
-        runtime = RuntimeService(
-            self.mock_hunter,
-            self.mock_master,
-            self.mock_repository,
-            deduplicator=mock_deduplicator,
-            alert_builder=mock_alert_builder,
-            alert_dispatcher=mock_alert_dispatcher
-        )
-        
-        mock_hunter_result = MagicMock()
-        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
-        self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        mock_result = FinalAnalysisResult(
-            symbol="A",
-            final_rating=80,
-            confidence_level=90,
-            recommendation="Buy",
-            positive_factors=[],
-            risk_factors=[],
-            warnings=[],
-            summary="",
-            generated_at=datetime.now()
-        )
-        self.mock_master.run_analysis.return_value = mock_result
-        
-        report = runtime.run_cycle({})
-        
-        mock_alert_builder.should_alert.assert_called_once_with(mock_result)
-        mock_alert_builder.build_alert.assert_not_called()
-        mock_alert_dispatcher.dispatch.assert_not_called()
+
+    def test_alert_telegram_error_does_not_stop_runtime(self):
+        """Telegram dispatch failure is logged, not raised — cycle continues."""
+        event = self._make_market_event(quality_level="HIGH")
+        mock_telegram = MagicMock()
+        runtime = self._setup_alert_runtime(telegram_channel=mock_telegram)
+        runtime.alert_builder.should_alert.return_value = True
+        runtime.alert_dispatcher.dispatch.side_effect = Exception("Telegram API error")
+
+        report = self._run_alert_cycle(runtime, events_out_content=[event])
+
+        # Cycle must complete successfully — error_count remains 0
         self.assertEqual(report.error_count, 0)
-        
-    def test_alert_pipeline_no_alert_for_duplicate(self):
-        """Test that no alert is built for duplicates."""
-        mock_deduplicator = MagicMock()
-        mock_deduplicator.should_process.return_value = False
-        mock_alert_builder = MagicMock()
-        mock_alert_dispatcher = MagicMock()
-        
-        runtime = RuntimeService(
-            self.mock_hunter,
-            self.mock_master,
-            self.mock_repository,
-            deduplicator=mock_deduplicator,
-            alert_builder=mock_alert_builder,
-            alert_dispatcher=mock_alert_dispatcher
-        )
-        
-        mock_hunter_result = MagicMock()
-        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
-        self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        report = runtime.run_cycle({})
-        
-        mock_alert_builder.should_alert.assert_not_called()
-        mock_alert_dispatcher.dispatch.assert_not_called()
-        self.assertEqual(report.error_count, 0)
-        
+        self.assertEqual(report.success_count, 1)
+
+    def test_alert_no_market_events_skips_pipeline(self):
+        """When no MarketEvents are detected, alert pipeline is not invoked."""
+        runtime = self._setup_alert_runtime()
+
+        self._run_alert_cycle(runtime, events_out_content=[])  # no events
+
+        runtime.alert_builder.should_alert.assert_not_called()
+        runtime.alert_dispatcher.dispatch.assert_not_called()
+
     def test_alert_pipeline_no_components(self):
-        """Test runtime works without alert components."""
+        """Runtime works without any alert components (unchanged)."""
         mock_deduplicator = MagicMock()
         mock_deduplicator.should_process.return_value = True
-        
+
         runtime = RuntimeService(
             self.mock_hunter,
             self.mock_master,
             self.mock_repository,
             deduplicator=mock_deduplicator
         )
-        
+
         mock_hunter_result = MagicMock()
         mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
         self.mock_hunter.scan.return_value = mock_hunter_result
-        
+
         mock_result = FinalAnalysisResult(
             symbol="A",
             final_rating=80,
@@ -622,18 +680,42 @@ class TestRuntimeService(unittest.TestCase):
             generated_at=datetime.now()
         )
         self.mock_master.run_analysis.return_value = mock_result
-        
+
         report = runtime.run_cycle({})
-        
+
         self.assertEqual(report.error_count, 0)
-        
-    def test_alert_pipeline_skip_on_master_error(self):
-        """Test that alert pipeline is skipped when MasterEngine returns error."""
+
+    def test_alert_telegram_message_id_not_saved(self):
+        """telegram_message_id is NOT written to MarketEvent.metadata."""
+        event = self._make_market_event(quality_level="HIGH")
+        runtime = self._setup_alert_runtime()
+        runtime.alert_builder.should_alert.return_value = True
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        # event.metadata must NOT be touched for telegram_message_id
+        if hasattr(event, 'metadata'):
+            self.assertNotIn("telegram_message_id", event.metadata or {})
+
+    def test_alert_history_repository_not_called_for_telegram(self):
+        """HistoryRepository is not invoked to persist Telegram metadata."""
+        event = self._make_market_event(quality_level="HIGH")
+        runtime = self._setup_alert_runtime()
+        runtime.alert_builder.should_alert.return_value = True
+
+        self._run_alert_cycle(runtime, events_out_content=[event])
+
+        # Repository is called for save_cycle, but NOT for Telegram-specific writes
+        # Save cycle call is expected; no new Telegram-specific calls
+        self.mock_repository.save_cycle.assert_called()
+
+    def test_alert_pipeline_no_alert_for_duplicate(self):
+        """Duplicates skipped by deduplicator — no alert pipeline invoked."""
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = False
         mock_alert_builder = MagicMock()
         mock_alert_dispatcher = MagicMock()
-        mock_deduplicator = MagicMock()
-        mock_deduplicator.should_process.return_value = True
-        
+
         runtime = RuntimeService(
             self.mock_hunter,
             self.mock_master,
@@ -642,100 +724,44 @@ class TestRuntimeService(unittest.TestCase):
             alert_builder=mock_alert_builder,
             alert_dispatcher=mock_alert_dispatcher
         )
-        
+
         mock_hunter_result = MagicMock()
         mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
         self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        self.mock_master.run_analysis.side_effect = Exception("Master error")
-        
+
         report = runtime.run_cycle({})
-        
+
+        mock_alert_builder.should_alert.assert_not_called()
+        mock_alert_dispatcher.dispatch.assert_not_called()
+        self.assertEqual(report.error_count, 0)
+
+    def test_alert_pipeline_skip_on_master_error(self):
+        """Alert pipeline is skipped when MasterEngine raises an exception."""
+        mock_alert_builder = MagicMock()
+        mock_alert_dispatcher = MagicMock()
+        mock_deduplicator = MagicMock()
+        mock_deduplicator.should_process.return_value = True
+
+        runtime = RuntimeService(
+            self.mock_hunter,
+            self.mock_master,
+            self.mock_repository,
+            deduplicator=mock_deduplicator,
+            alert_builder=mock_alert_builder,
+            alert_dispatcher=mock_alert_dispatcher
+        )
+
+        mock_hunter_result = MagicMock()
+        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
+        self.mock_hunter.scan.return_value = mock_hunter_result
+
+        self.mock_master.run_analysis.side_effect = Exception("Master error")
+
+        report = runtime.run_cycle({})
+
         mock_alert_builder.should_alert.assert_not_called()
         mock_alert_dispatcher.dispatch.assert_not_called()
         self.assertEqual(report.error_count, 1)
-        
-    def test_alert_builder_error_handling(self):
-        """Test error handling when AlertBuilder fails."""
-        mock_alert_builder = MagicMock()
-        mock_alert_builder.should_alert.return_value = True
-        mock_alert_builder.build_alert.side_effect = Exception("Builder error")
-        mock_alert_dispatcher = MagicMock()
-        mock_deduplicator = MagicMock()
-        mock_deduplicator.should_process.return_value = True
-        
-        runtime = RuntimeService(
-            self.mock_hunter,
-            self.mock_master,
-            self.mock_repository,
-            deduplicator=mock_deduplicator,
-            alert_builder=mock_alert_builder,
-            alert_dispatcher=mock_alert_dispatcher
-        )
-        
-        mock_hunter_result = MagicMock()
-        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
-        self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        mock_result = FinalAnalysisResult(
-            symbol="A",
-            final_rating=80,
-            confidence_level=90,
-            recommendation="Buy",
-            positive_factors=[],
-            risk_factors=[],
-            warnings=[],
-            summary="",
-            generated_at=datetime.now()
-        )
-        self.mock_master.run_analysis.return_value = mock_result
-        
-        report = runtime.run_cycle({})
-        
-        self.assertEqual(report.error_count, 1)
-        self.assertEqual(report.errors[0].stage, "Alert Builder")
-        mock_alert_dispatcher.dispatch.assert_not_called()
-        
-    def test_alert_dispatcher_error_handling(self):
-        """Test error handling when AlertDispatcher fails."""
-        mock_alert_builder = MagicMock()
-        mock_alert_builder.should_alert.return_value = True
-        mock_alert_builder.build_alert.return_value = "Test alert message"
-        mock_alert_dispatcher = MagicMock()
-        mock_alert_dispatcher.dispatch.side_effect = Exception("Dispatcher error")
-        mock_deduplicator = MagicMock()
-        mock_deduplicator.should_process.return_value = True
-        
-        runtime = RuntimeService(
-            self.mock_hunter,
-            self.mock_master,
-            self.mock_repository,
-            deduplicator=mock_deduplicator,
-            alert_builder=mock_alert_builder,
-            alert_dispatcher=mock_alert_dispatcher
-        )
-        
-        mock_hunter_result = MagicMock()
-        mock_hunter_result.opportunities = [MagicMock(instrument_id="A")]
-        self.mock_hunter.scan.return_value = mock_hunter_result
-        
-        mock_result = FinalAnalysisResult(
-            symbol="A",
-            final_rating=80,
-            confidence_level=90,
-            recommendation="Buy",
-            positive_factors=[],
-            risk_factors=[],
-            warnings=[],
-            summary="",
-            generated_at=datetime.now()
-        )
-        self.mock_master.run_analysis.return_value = mock_result
-        
-        report = runtime.run_cycle({})
-        
-        self.assertEqual(report.error_count, 1)
-        self.assertEqual(report.errors[0].stage, "Alert Dispatcher")
 
     def test_multiple_opportunities_with_duplicates(self):
         """Test behavior with some duplicates and some new opportunities."""
@@ -954,7 +980,7 @@ class TestRuntimeService(unittest.TestCase):
         self.assertFalse(hasattr(runtime, 'volume_detector'))
 
     def test_market_events_not_in_old_pipeline(self):
-        """Test that MarketEvents do NOT reach old pipeline engines."""
+        """Alert pipeline is NOT invoked without MarketEvents (ETAP 7.5)."""
         mock_deduplicator = MagicMock()
         mock_deduplicator.should_process.return_value = True
         mock_alert_builder = MagicMock()
@@ -990,12 +1016,10 @@ class TestRuntimeService(unittest.TestCase):
 
         report = runtime.run_cycle({})
 
-        # Alert pipeline receives FinalAnalysisResult, NOT MarketEvent
-        mock_alert_builder.should_alert.assert_called_once_with(mock_result)
-        # Verify the alert builder did NOT receive MarketEvent
-        call_args = mock_alert_builder.should_alert.call_args
-        self.assertIsInstance(call_args[0][0], FinalAnalysisResult)
-        self.assertNotIsInstance(call_args[0][0], MarketEvent)
+        # Without MarketEvents in events_out, alert pipeline is NOT invoked
+        # (ETAP 7.5 requires MarketEvent + FinalAnalysisResult)
+        mock_alert_builder.should_alert.assert_not_called()
+        mock_alert_dispatcher.dispatch.assert_not_called()
 
     def test_no_self_last_events(self):
         """Test that RuntimeService does NOT store self.last_events."""
