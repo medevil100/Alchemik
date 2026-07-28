@@ -38,6 +38,7 @@ class DecisionEngine:
         event_type: str,
         technical_keys: list,
         news_count: int,
+        tavily_context: Optional[dict] = None,
     ) -> AISignal:
         """
         Build a placeholder AISignal — the single factory for all execution paths.
@@ -47,21 +48,110 @@ class DecisionEngine:
             event_type: Event type or "legacy" for backward-compat path.
             technical_keys: Names of available technical indicators.
             news_count: Number of news items available (0 if none).
+            tavily_context: Optional Tavily search context dict
+                (from MarketEvent.tavily_context after KROK 4A).
 
         Returns:
             AISignal with placeholder confidence and generated reasoning.
         """
         technical_desc = ", ".join(technical_keys) if technical_keys else "none"
+        reasoning_parts = [
+            f"MarketEvent [{ticker}]: {event_type}.",
+            f"Technical indicators: {technical_desc}.",
+            f"News items: {news_count}.",
+        ]
+
+        # Append Tavily section only when context is present and non-empty
+        tavily_text = DecisionEngine._format_tavily_context(tavily_context)
+        if tavily_text:
+            reasoning_parts.append(tavily_text)
+
         return AISignal(
             signal_type="combined_analysis",
             confidence=0.0,  # Placeholder — actual confidence in future stages
             generated_at=datetime.datetime.now(),
-            reasoning=(
-                f"MarketEvent [{ticker}]: {event_type}. "
-                f"Technical indicators: {technical_desc}. "
-                f"News items: {news_count}"
-            ),
+            reasoning=" ".join(reasoning_parts),
         )
+
+    # ------------------------------------------------------------------
+    # Tavily context formatter
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_tavily_context(tavily_context: Optional[dict]) -> str:
+        """Format Tavily search context for inclusion in AI reasoning.
+
+        Produces a concise, deterministic string summarising the
+        external search results.  Returns an empty string when
+        *tavily_context* is ``None``, empty, or has no usable results.
+
+        The formatted text explicitly labels Tavily data as an external
+        informational context — distinct from Yahoo Finance market data
+        (per docs/FILOZOFIA_ALCHEMIKA.md).
+
+        Args:
+            tavily_context: Dict from MarketEvent.tavily_context
+                (shape: ``{query, results_count, top_results, sentiment}``)
+                or ``None``.
+
+        Returns:
+            A formatted string ready for embedding in reasoning, or
+            an empty string when there is nothing to report.
+        """
+        if not isinstance(tavily_context, dict) or not tavily_context:
+            return ""
+
+        query = tavily_context.get("query")
+        results_count = tavily_context.get("results_count", 0)
+        top_results = tavily_context.get("top_results")
+        sentiment = tavily_context.get("sentiment")
+
+        if not isinstance(top_results, (list, tuple)) or not top_results:
+            return ""
+
+        # === Build Tavily section ===
+        parts: list[str] = []
+        parts.append("Tavily external context:")
+
+        if query and isinstance(query, str) and query.strip():
+            parts.append(f"Query: {query.strip()}.")
+        if isinstance(results_count, (int, float)):
+            parts.append(f"Found: {int(results_count)} result(s).")
+
+        for idx, item in enumerate(top_results, start=1):
+            if not isinstance(item, dict):
+                continue
+            item_lines: list[str] = []
+
+            title = item.get("title")
+            if isinstance(title, str) and title.strip():
+                item_lines.append(f"  [{idx}] {title.strip()}")
+
+            pub_date = item.get("published_date")
+            if isinstance(pub_date, str) and pub_date.strip():
+                item_lines.append(f"      Date: {pub_date.strip()}")
+
+            url = item.get("url")
+            if isinstance(url, str) and url.strip():
+                item_lines.append(f"      URL: {url.strip()}")
+
+            score = item.get("score")
+            if isinstance(score, (int, float)):
+                item_lines.append(f"      Relevance: {score:.2f}")
+
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                # Limit content to 500 characters to keep reasoning compact
+                snippet = content.strip()[:500]
+                item_lines.append(f"      Content: {snippet}")
+
+            if item_lines:
+                parts.extend(item_lines)
+
+        if sentiment is not None and isinstance(sentiment, (int, float)):
+            parts.append(f"Sentiment: {sentiment:.2f}")
+
+        return " | ".join(parts)
 
     # ------------------------------------------------------------------
     # Canonical entry point — ETAP 1
@@ -87,11 +177,13 @@ class DecisionEngine:
         try:
             technical = event.technical_context or {}
             news_count = len(event.news_context) if event.news_context else 0
+            tavily_context = getattr(event, 'tavily_context', None)
             return self._build_aisignal(
                 ticker=event.ticker,
                 event_type=event.event_type,
                 technical_keys=list(technical.keys()),
                 news_count=news_count,
+                tavily_context=tavily_context,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to process MarketEvent: {e}")

@@ -10,6 +10,8 @@ from engines.hunter import HunterEngine
 from engines.analyst import AnalystEngine
 from engines.price_detector import PriceDetector
 from engines.volume_detector import VolumeDetector
+from engines.composer.engine import ComposerEngine
+from engines.quality.engine import QualityEngine
 from engines.detectors import (
     BaseDetector,
     CorporateEventDetector,
@@ -27,6 +29,7 @@ from engines.detectors import (
     TechnicalEventDetector,
 )
 from data.models import FinalAnalysisResult, MarketData, MarketEvent, InstrumentType
+from data.models.pipeline_decision import PipelineDecision
 from data.models.analysis_result import AnalysisResult
 from data.models.event_enums import EventFamily, EventOwner, PriorityLevel
 from datetime import datetime, timezone
@@ -174,7 +177,10 @@ class MasterEngine:
                  analyst_engine=None,
                  price_detector=None,
                  volume_detector=None,
-                 detector_registry=None):
+                 detector_registry=None,
+                 composer_engine=None,
+                 quality_engine=None,
+                 tavily_adapter=None):
         self.technical_engine = technical_engine or TechnicalEngine()
         self.news_engine = news_engine or NewsPipeline()
         self.ai_engine = ai_engine or DecisionEngine()
@@ -186,6 +192,9 @@ class MasterEngine:
         self.volume_detector = volume_detector or VolumeDetector()
         self.detector_registry = detector_registry or _build_default_registry()
         self._orchestrator = DetectorOrchestrator(self.detector_registry)
+        self._composer_engine = composer_engine or ComposerEngine()
+        self._quality_engine = quality_engine or QualityEngine()
+        self._tavily_adapter = tavily_adapter
 
     def _run_base_detectors(
         self,
@@ -362,17 +371,94 @@ class MasterEngine:
                 ohlcv_data=technical_result.market_data,
             )
 
+        # Step 2a: Compose — merge related MarketEvents into Composite Events
+        # (ETAP 7.3 / KROK 2A)
+        if market_events:
+            market_events = self._composer_engine.compose(market_events)
+
+        # Step 2b: Quality Assessment — assign quality_level to each event
+        # (ETAP 7.2 / KROK 2B)
+        if market_events:
+            for i, ev in enumerate(market_events):
+                market_events[i] = self._quality_engine.assess(ev)
+
+        # Step 2c: Pipeline Decision — decide which stages to run per event
+        # (ETAP 7.4 / KROK 2C)
+        pipeline_decisions: List[PipelineDecision] = []
+        if market_events:
+            decisions_map = {}  # event_id → PipelineDecision (used in AI loop)
+            for ev in market_events:
+                decision = self.ai_engine.decide_pipeline(ev)
+                pipeline_decisions.append(decision)
+                decisions_map[ev.event_id] = decision
+            run_news = any(d.run_news for d in pipeline_decisions)
+            run_ai_for_any = any(d.run_ai for d in pipeline_decisions)
+        else:
+            run_news = False
+            run_ai_for_any = False
+            decisions_map = {}
+
         # Pass events to caller via the optional output list
         if events_out is not None and market_events:
             events_out.extend(market_events)
 
-        # Step 3: News Engine
-        news_result = self.news_engine.process([symbol])
+        # Step 3: News Engine (conditional on pipeline decision)
+        if run_news:
+            news_result = self.news_engine.process([symbol])
+        else:
+            news_result = []
 
-        # Step 4: AI Engine
-        if market_events:
+        # Step 3b: Tavily Search (conditional on pipeline decision)
+        # Runs BEFORE AI so that tavily_context is available during AI analysis.
+        if market_events and self._tavily_adapter is not None:
+            for ev in market_events:
+                ev_decision = decisions_map.get(ev.event_id)
+                if ev_decision is None or not ev_decision.run_tavily:
+                    continue
+
+                try:
+                    ctx = self._tavily_adapter.search_for_event(ev)
+                    ev.tavily_context = {
+                        "query": ctx.query,
+                        "results_count": ctx.results_count,
+                        "top_results": [
+                            {
+                                "title": r.title,
+                                "url": r.url,
+                                "content": r.content,
+                                "published_date": (
+                                    r.published_date.isoformat()
+                                    if r.published_date else None
+                                ),
+                                "score": r.score,
+                            }
+                            for r in ctx.top_results
+                        ],
+                        "sentiment": ctx.sentiment,
+                    }
+                except Exception as exc:
+                    logger.warning(
+                        "Tavily search failed for %s (%s): %s",
+                        symbol,
+                        ev.event_type,
+                        exc,
+                    )
+        elif market_events and self._tavily_adapter is None:
+            any_tavily = any(d.run_tavily for d in pipeline_decisions)
+            if any_tavily:
+                logger.warning(
+                    "Tavily requested for %s but no TavilyEventAdapter provided",
+                    symbol,
+                )
+
+        # Step 4: AI Engine (conditional on pipeline decision)
+        if market_events and run_ai_for_any:
             ai_results: List = []
             for ev in market_events:
+                ev_decision = decisions_map.get(ev.event_id)
+                if ev_decision is None or not ev_decision.run_ai:
+                    continue  # skip AI for this event
+
                 if hasattr(technical_result, 'indicators') and technical_result.indicators:
                     ev.technical_context = technical_result.indicators
 
@@ -385,6 +471,9 @@ class MasterEngine:
                     "reasoning": ai_signal.reasoning,
                     "generated_at": ai_signal.generated_at.isoformat(),
                 }
+                # Enrich ai_context with Tavily data if available
+                if ev.tavily_context is not None:
+                    ev.ai_context["tavily_context"] = ev.tavily_context
 
             ai_result = ai_results[0] if ai_results else self.ai_engine.process_data({
                 "symbol": symbol, "technical": technical_result, "news": news_result

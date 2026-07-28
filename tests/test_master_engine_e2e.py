@@ -11,18 +11,17 @@ from data.models import MarketData, NewsItem, AISignal, FinalAnalysisResult
 
 class TestMasterEngineE2E(unittest.TestCase):
     def setUp(self):
-        # Mock TechnicalEngine
+        # Mock TechnicalEngine — return an object with market_data attribute
         self.mock_technical_engine = MagicMock(spec=TechnicalEngine)
-        self.mock_technical_engine.analyze.return_value = [
+        _ohlcv_data_e2e = [
             MarketData(
-                open=100.0,
-                high=105.0,
-                low=95.0,
-                close=102.0,
-                volume=1000000,
-                timestamp=datetime.now()
+                open=100.0, high=105.0, low=95.0, close=102.0,
+                volume=1000000, timestamp=datetime.now(),
             )
         ]
+        self._technical_result = MagicMock()
+        self._technical_result.market_data = _ohlcv_data_e2e
+        self.mock_technical_engine.analyze.return_value = self._technical_result
 
         # Mock NewsPipeline
         self.mock_news_engine = MagicMock(spec=NewsPipeline)
@@ -49,6 +48,12 @@ class TestMasterEngineE2E(unittest.TestCase):
         # Mock HunterEngine
         self.mock_hunter_engine = MagicMock(spec=HunterEngine)
         self.mock_hunter_engine.analyze = MagicMock(return_value=None)  # Or any mock return value
+
+        # Mock PriceDetector and VolumeDetector (return empty — no events)
+        self.mock_price_detector = MagicMock()
+        self.mock_price_detector.detect.return_value = []
+        self.mock_volume_detector = MagicMock()
+        self.mock_volume_detector.detect.return_value = []
 
         # Mock RankingEngine (to avoid market_data check)
         self.mock_ranking_engine = MagicMock()
@@ -83,7 +88,9 @@ class TestMasterEngineE2E(unittest.TestCase):
             hunter_engine=self.mock_hunter_engine,
             ranking_engine=self.mock_ranking_engine,
             risk_engine=self.mock_risk_engine,
-            analyst_engine=self.mock_analyst_engine
+            analyst_engine=self.mock_analyst_engine,
+            price_detector=self.mock_price_detector,
+            volume_detector=self.mock_volume_detector,
         )
 
     def test_full_pipeline_flow(self):
@@ -118,7 +125,7 @@ class TestMasterEngineE2E(unittest.TestCase):
 
         # Validate no real HTTP requests were made
         self.mock_technical_engine.analyze.assert_called_once()
-        self.mock_news_engine.process.assert_called_once()
+        # News/process may not be called (no events → run_news=False)
         self.mock_ai_engine.process_data.assert_called_once()
 
     def test_invalid_symbol(self):
