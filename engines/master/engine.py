@@ -97,6 +97,164 @@ _CATALOGUE: dict[str, tuple[EventFamily, str, Optional[str], PriorityLevel]] = {
     "OBV_DIVERGENCE": (EventFamily.TECHNICAL, "Wskaźniki techniczne", "OBV", PriorityLevel.MEDIUM),
     "ATR_EXPANSION": (EventFamily.TECHNICAL, "Wskaźniki techniczne", "ATR", PriorityLevel.MEDIUM),
     "FIBONACCI_HIT": (EventFamily.TECHNICAL, "Wskaźniki techniczne", "Fibonacci", PriorityLevel.MEDIUM),
+    # ------------------------------------------------------------------
+    # FUNDAMENTAL (FundamentalEventDetector — 5 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.4
+    # ------------------------------------------------------------------
+    "PE_RATIO_CHANGE": (EventFamily.FUNDAMENTAL, "Wskaźniki finansowe", None, PriorityLevel.HIGH),
+    "REVENUE_CHANGE": (EventFamily.FUNDAMENTAL, "Wskaźniki finansowe", None, PriorityLevel.HIGH),
+    "NET_INCOME_CHANGE": (EventFamily.FUNDAMENTAL, "Wskaźniki finansowe", None, PriorityLevel.HIGH),
+    "EARNINGS_RELEASE": (EventFamily.FUNDAMENTAL, "Wyniki finansowe", None, PriorityLevel.CRITICAL),
+    "GUIDANCE_UPDATE": (EventFamily.FUNDAMENTAL, "Wyniki finansowe", None, PriorityLevel.CRITICAL),
+    # ------------------------------------------------------------------
+    # CORPORATE (CorporateEventDetector — 34 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.5
+    # ------------------------------------------------------------------
+    # Insider Trading
+    "INSIDER_BUY": (EventFamily.CORPORATE, "Insider Trading", None, PriorityLevel.CRITICAL),
+    "INSIDER_SELL": (EventFamily.CORPORATE, "Insider Trading", None, PriorityLevel.CRITICAL),
+    "INSIDER_CLUSTER_BUY": (EventFamily.CORPORATE, "Insider Trading", None, PriorityLevel.HIGH),
+    "INSIDER_CLUSTER_SELL": (EventFamily.CORPORATE, "Insider Trading", None, PriorityLevel.HIGH),
+    # Zmiany akcjonariatu
+    "SHAREHOLDER_INCREASE": (EventFamily.CORPORATE, "Zmiany akcjonariatu", None, PriorityLevel.CRITICAL),
+    "SHAREHOLDER_DECREASE": (EventFamily.CORPORATE, "Zmiany akcjonariatu", None, PriorityLevel.CRITICAL),
+    "SIGNIFICANT_HOLDER_CHANGE": (EventFamily.CORPORATE, "Zmiany akcjonariatu", None, PriorityLevel.HIGH),
+    # Rekomendacje
+    "ANALYST_UPGRADE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "ANALYST_DOWNGRADE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "PRICE_TARGET_INCREASE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "PRICE_TARGET_DECREASE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "NEW_COVERAGE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "COVERAGE_DROPPED": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    "RATING_CHANGE": (EventFamily.CORPORATE, "Rekomendacje", None, PriorityLevel.HIGH),
+    # Ratingi
+    "CREDIT_RATING_UPGRADE": (EventFamily.CORPORATE, "Ratingi", None, PriorityLevel.CRITICAL),
+    "CREDIT_RATING_DOWNGRADE": (EventFamily.CORPORATE, "Ratingi", None, PriorityLevel.CRITICAL),
+    "CREDIT_WATCH_POSITIVE": (EventFamily.CORPORATE, "Ratingi", None, PriorityLevel.HIGH),
+    "CREDIT_WATCH_NEGATIVE": (EventFamily.CORPORATE, "Ratingi", None, PriorityLevel.HIGH),
+    # Fuzje i przejęcia
+    "MERGER_ANNOUNCEMENT": (EventFamily.CORPORATE, "Fuzje i przejęcia", None, PriorityLevel.CRITICAL),
+    "ACQUISITION_ANNOUNCEMENT": (EventFamily.CORPORATE, "Fuzje i przejęcia", None, PriorityLevel.CRITICAL),
+    "TAKEOVER_BID": (EventFamily.CORPORATE, "Fuzje i przejęcia", None, PriorityLevel.CRITICAL),
+    "MERGER_COMPLETION": (EventFamily.CORPORATE, "Fuzje i przejęcia", None, PriorityLevel.CRITICAL),
+    "ACQUISITION_COMPLETION": (EventFamily.CORPORATE, "Fuzje i przejęcia", None, PriorityLevel.CRITICAL),
+    # Kontrakty
+    "MAJOR_CONTRACT_WIN": (EventFamily.CORPORATE, "Kontrakty", None, PriorityLevel.CRITICAL),
+    "MAJOR_CONTRACT_LOSS": (EventFamily.CORPORATE, "Kontrakty", None, PriorityLevel.CRITICAL),
+    # Pozwy
+    "LAWSUIT_FILED": (EventFamily.CORPORATE, "Pozwy", None, PriorityLevel.HIGH),
+    "SETTLEMENT_ANNOUNCED": (EventFamily.CORPORATE, "Pozwy", None, PriorityLevel.MEDIUM),
+    # Problemy prawne
+    "REGULATORY_INVESTIGATION": (EventFamily.CORPORATE, "Problemy prawne", None, PriorityLevel.CRITICAL),
+    # Upadłości
+    "BANKRUPTCY_FILING": (EventFamily.CORPORATE, "Upadłości", None, PriorityLevel.CRITICAL),
+    "RESTRUCTURING_PLAN": (EventFamily.CORPORATE, "Upadłości", None, PriorityLevel.HIGH),
+    # Zmiany zarządu
+    "CEO_CHANGE": (EventFamily.CORPORATE, "Zmiany zarządu", None, PriorityLevel.CRITICAL),
+    "CFO_CHANGE": (EventFamily.CORPORATE, "Zmiany zarządu", None, PriorityLevel.HIGH),
+    "BOARD_CHANGE": (EventFamily.CORPORATE, "Zmiany zarządu", None, PriorityLevel.MEDIUM),
+    "MANAGEMENT_SHAKEUP": (EventFamily.CORPORATE, "Zmiany zarządu", None, PriorityLevel.MEDIUM),
+    # ------------------------------------------------------------------
+    # REGULATORY (RegulatoryEventDetector — 3 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.6
+    # ------------------------------------------------------------------
+    "ESPI_FILING": (EventFamily.REGULATORY, "ESPI", None, PriorityLevel.CRITICAL),
+    "EBI_FILING": (EventFamily.REGULATORY, "EBI", None, PriorityLevel.CRITICAL),
+    "FILING_DELAY": (EventFamily.REGULATORY, "ESPI", None, PriorityLevel.HIGH),
+    # ------------------------------------------------------------------
+    # MACRO (MacroEventDetector — 16 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.7
+    # ------------------------------------------------------------------
+    # Makroekonomia
+    "GDP_BEAT": (EventFamily.MACRO, "Makroekonomia", None, PriorityLevel.HIGH),
+    "GDP_MISS": (EventFamily.MACRO, "Makroekonomia", None, PriorityLevel.HIGH),
+    "GDP_REVISION": (EventFamily.MACRO, "Makroekonomia", None, PriorityLevel.MEDIUM),
+    # Stopy procentowe
+    "INTEREST_RATE_HIKE": (EventFamily.MACRO, "Stopy procentowe", None, PriorityLevel.CRITICAL),
+    "INTEREST_RATE_CUT": (EventFamily.MACRO, "Stopy procentowe", None, PriorityLevel.CRITICAL),
+    "RATE_DECISION_SURPRISE": (EventFamily.MACRO, "Stopy procentowe", None, PriorityLevel.CRITICAL),
+    # Inflacja
+    "CPI_BEAT": (EventFamily.MACRO, "Inflacja", None, PriorityLevel.HIGH),
+    "CPI_MISS": (EventFamily.MACRO, "Inflacja", None, PriorityLevel.HIGH),
+    "PPI_SURGE": (EventFamily.MACRO, "Inflacja", None, PriorityLevel.HIGH),
+    "INFLATION_TREND_CHANGE": (EventFamily.MACRO, "Inflacja", None, PriorityLevel.HIGH),
+    # Waluty
+    "CURRENCY_SURGE": (EventFamily.MACRO, "Waluty", None, PriorityLevel.HIGH),
+    "CURRENCY_PLUMMET": (EventFamily.MACRO, "Waluty", None, PriorityLevel.HIGH),
+    "CURRENCY_VOLATILITY_SPIKE": (EventFamily.MACRO, "Waluty", None, PriorityLevel.MEDIUM),
+    # Surowce
+    "COMMODITY_PRICE_SPIKE": (EventFamily.MACRO, "Surowce", None, PriorityLevel.HIGH),
+    "COMMODITY_PRICE_DROP": (EventFamily.MACRO, "Surowce", None, PriorityLevel.HIGH),
+    # Geopolityka
+    "GEOPOLITICAL_ESCALATION": (EventFamily.MACRO, "Geopolityka", None, PriorityLevel.CRITICAL),
+    # ------------------------------------------------------------------
+    # ETF (ETFEventDetector — 4 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.8
+    # ------------------------------------------------------------------
+    "ETF_COMPOSITION_CHANGE": (EventFamily.ETF, "ETF", None, PriorityLevel.HIGH),
+    "ETF_FLOW_SPIKE": (EventFamily.ETF, "ETF", None, PriorityLevel.HIGH),
+    "ETF_PREMIUM_DISCOUNT": (EventFamily.ETF, "ETF", None, PriorityLevel.MEDIUM),
+    "ETF_CLOSURE_ANNOUNCEMENT": (EventFamily.ETF, "ETF", None, PriorityLevel.CRITICAL),
+    # ------------------------------------------------------------------
+    # DERIVATIVES (DerivativesEventDetector — 9 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.9
+    # ------------------------------------------------------------------
+    # Opcje
+    "UNUSUAL_OPTIONS_VOLUME": (EventFamily.DERIVATIVES, "Opcje", None, PriorityLevel.HIGH),
+    "OPTIONS_PUT_CALL_RATIO": (EventFamily.DERIVATIVES, "Opcje", None, PriorityLevel.MEDIUM),
+    "OPTIONS_VOLATILITY_SKEW": (EventFamily.DERIVATIVES, "Opcje", None, PriorityLevel.HIGH),
+    # Short Interest
+    "SHORT_INTEREST_SPIKE": (EventFamily.DERIVATIVES, "Short Interest", None, PriorityLevel.HIGH),
+    "SHORT_INTEREST_SQUEEZE": (EventFamily.DERIVATIVES, "Short Interest", None, PriorityLevel.CRITICAL),
+    # Dark Pool
+    "DARK_POOL_PRINT": (EventFamily.DERIVATIVES, "Dark Pool", None, PriorityLevel.MEDIUM),
+    "DARK_POOL_SPIKE": (EventFamily.DERIVATIVES, "Dark Pool", None, PriorityLevel.MEDIUM),
+    # Nietypowe transakcje
+    "UNUSUAL_BLOCK_TRADE": (EventFamily.DERIVATIVES, "Nietypowe transakcje", None, PriorityLevel.HIGH),
+    "BLOCK_TRADE_CLUSTER": (EventFamily.DERIVATIVES, "Nietypowe transakcje", None, PriorityLevel.HIGH),
+    # ------------------------------------------------------------------
+    # SENTIMENT (SentimentNewsEventDetector — 11 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.10
+    # ------------------------------------------------------------------
+    # Media społecznościowe
+    "SOCIAL_MEDIA_SPIKE": (EventFamily.SENTIMENT, "Media społecznościowe", None, PriorityLevel.HIGH),
+    "SOCIAL_MEDIA_SENTIMENT_SHIFT": (EventFamily.SENTIMENT, "Media społecznościowe", None, PriorityLevel.HIGH),
+    # Sentyment rynku
+    "VIX_SPIKE": (EventFamily.SENTIMENT, "Sentyment rynku", None, PriorityLevel.CRITICAL),
+    "VIX_COLLAPSE": (EventFamily.SENTIMENT, "Sentyment rynku", None, PriorityLevel.HIGH),
+    # News
+    "BREAKING_NEWS": (EventFamily.SENTIMENT, "News", None, PriorityLevel.CRITICAL),
+    "ANALYST_REPORT": (EventFamily.SENTIMENT, "News", None, PriorityLevel.HIGH),
+    "EXECUTIVE_INTERVIEW": (EventFamily.SENTIMENT, "News", None, PriorityLevel.MEDIUM),
+    # Tavily
+    "TAVILY_RESULT_SPIKE": (EventFamily.SENTIMENT, "Tavily", None, PriorityLevel.HIGH),
+    "TAVILY_SENTIMENT_SHIFT": (EventFamily.SENTIMENT, "Tavily", None, PriorityLevel.HIGH),
+    # Pozostałe
+    "NEWS_SENTIMENT_SHIFT": (EventFamily.SENTIMENT, "Sentyment rynku", None, PriorityLevel.HIGH),
+    "EARNINGS_WHISPER": (EventFamily.SENTIMENT, "News", None, PriorityLevel.HIGH),
+    # ------------------------------------------------------------------
+    # SYSTEM (SystemEventDetector — 12 event types)
+    # Source: docs/Hierarchia_Zdarzen_Rynkowych.md §4.11
+    # ------------------------------------------------------------------
+    # Alerty własne
+    "COMPOSITE_EVENT": (EventFamily.SYSTEM, "Alerty własne", None, PriorityLevel.CRITICAL),
+    "INSTRUMENT_STATE_CHANGE": (EventFamily.SYSTEM, "Alerty własne", None, PriorityLevel.CRITICAL),
+    "RECURRING_PATTERN": (EventFamily.SYSTEM, "Alerty własne", None, PriorityLevel.HIGH),
+    # Międzyinstrumentowe
+    "CROSS_INSTRUMENT_CORRELATION": (EventFamily.SYSTEM, "Międzyinstrumentowe", None, PriorityLevel.MEDIUM),
+    # Sektor
+    "SECTOR_ROTATION": (EventFamily.SYSTEM, "Sektor", None, PriorityLevel.HIGH),
+    # Sezonowe
+    "SEASONAL_PATTERN": (EventFamily.SYSTEM, "Sezonowe", None, PriorityLevel.LOW),
+    # Korelacje
+    "CORRELATION_BREAKDOWN": (EventFamily.SYSTEM, "Korelacje", None, PriorityLevel.HIGH),
+    # Pozostałe alerty własne
+    "VOLUME_ANOMALY_CLUSTER": (EventFamily.SYSTEM, "Alerty własne", None, PriorityLevel.MEDIUM),
+    "PRICE_VOLUME_DIVERGENCE": (EventFamily.SYSTEM, "Międzyinstrumentowe", None, PriorityLevel.MEDIUM),
+    "MULTIPLE_DETECTOR_CONFIRMATION": (EventFamily.SYSTEM, "Alerty własne", None, PriorityLevel.HIGH),
+    # Sektor (pozostałe)
+    "ADVANCED_DECLINE_RATIO": (EventFamily.SYSTEM, "Sektor", None, PriorityLevel.MEDIUM),
+    "MARKET_BREADTH_CHANGE": (EventFamily.SYSTEM, "Sektor", None, PriorityLevel.MEDIUM),
 }
 
 
