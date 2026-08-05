@@ -55,7 +55,7 @@ dashboard/tsc_output.txt
 
 # VS Code workspace settings (machine-local paths)
 .vscode/
-
+*.code-workspace
 # OS
 Thumbs.db
 .DS_Store
