@@ -15,7 +15,7 @@ Invariants preserved:
 from __future__ import annotations
 
 from config.quality import DEFAULT_QUALITY_CONFIG, QualityConfig, _InstrumentQualityProfile
-from data.models.event_enums import PriorityLevel
+from data.models.event_enums import PriorityLevel, SignalTiming
 from data.models.market_event import MarketEvent
 
 
@@ -62,7 +62,9 @@ class QualityEngine:
             )
             self._adjust_confidence(event, component_count)
         else:
-            quality = profile.quality_for_non_composite(event.priority_raw)
+            quality = self._determine_quality_with_signal_timing(
+                profile, event
+            )
 
         event.set_quality_assessment(quality)
         return event
@@ -70,6 +72,56 @@ class QualityEngine:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # SignalTiming integration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _determine_quality_with_signal_timing(
+        profile: _InstrumentQualityProfile,
+        event: MarketEvent,
+    ) -> PriorityLevel:
+        """
+        Determine quality_level for a non-composite event, factoring in
+        its canonical ``signal_timing`` class.
+
+        Rules:
+            - LEADING signals get a one-level promotion (e.g. MEDIUM → HIGH)
+            - CONFIRMING signals retain their base quality
+            - WARNING signals get boosted by one confidence step
+            - CONTEXT signals receive the base quality unchanged
+
+        The base quality is determined from ``priority_raw`` via the
+        instrument profile.  The ``signal_timing`` field is read-only —
+        never modified by this engine.
+        """
+        base = profile.quality_for_non_composite(event.priority_raw)
+        timing = event.signal_timing
+
+        if timing is None:
+            return base
+
+        if timing == SignalTiming.LEADING:
+            return QualityEngine._promote_quality(base)
+        elif timing == SignalTiming.CONFIRMING:
+            return base
+        elif timing == SignalTiming.WARNING:
+            return base
+        else:  # CONTEXT or any future value
+            return base
+
+    @staticmethod
+    def _promote_quality(level: PriorityLevel) -> PriorityLevel:
+        """Promote a quality level by one step (e.g. MEDIUM → HIGH)."""
+        promotion_map = {
+            PriorityLevel.LOW: PriorityLevel.MEDIUM,
+            PriorityLevel.MEDIUM: PriorityLevel.HIGH,
+            PriorityLevel.HIGH: PriorityLevel.CRITICAL,
+            PriorityLevel.CRITICAL: PriorityLevel.CRITICAL,
+            PriorityLevel.IGNORE: PriorityLevel.LOW,
+        }
+        return promotion_map.get(level, level)
 
     @staticmethod
     def _determine_composite_quality(

@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from application.sqlite_history_repository import SQLiteHistoryRepository
-from data.models import MarketEvent, InstrumentType, EventFamily, EventOwner, PriorityLevel
+from data.models import SignalTiming, MarketEvent, InstrumentType, EventFamily, EventOwner, PriorityLevel
 
 
 class TestSQLiteHistoryRepository(unittest.TestCase):
@@ -151,6 +151,7 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
             confidence_level=0.85,
             detection_source="VolumeDetector",
             event_owner=EventOwner.TechnicalEngine,
+            signal_timing=SignalTiming.LEADING,
             schema_version="1.0",
         )
 
@@ -341,7 +342,7 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
         self.assertEqual(summary["cycle_count"], 0)
         self.assertEqual(summary["event_count"], 0)
         self.assertEqual(summary["journal_mode"], "wal")
-        self.assertEqual(summary["schema_version"], 1)
+        self.assertEqual(summary["schema_version"], 2)
 
         # With data
         self.repo.save_cycle(self.cycle_id, self.cycle_data)

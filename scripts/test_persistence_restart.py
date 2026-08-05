@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from application.sqlite_history_repository import SQLiteHistoryRepository
 from data.models import MarketEvent, InstrumentType, EventFamily, EventOwner, PriorityLevel
+from data.models.event_enums import SignalTiming
 
 # 1. Create temp database
 tmp = tempfile.NamedTemporaryFile(delete=False)
@@ -42,6 +43,7 @@ try:
         detection_source="PriceDetector",
         event_owner=EventOwner.TechnicalEngine,
         schema_version="1.0",
+        signal_timing=SignalTiming.LEADING,
     )
     event2 = MarketEvent(
         event_id="evt_002",
@@ -58,6 +60,7 @@ try:
         detection_source="VolumeDetector",
         event_owner=EventOwner.TechnicalEngine,
         schema_version="1.0",
+        signal_timing=SignalTiming.LEADING,
     )
     repo.save_market_event("cycle_001", event.to_dict())
     repo.save_market_event("cycle_001", event2.to_dict())

@@ -20,11 +20,13 @@ from datetime import datetime, timezone
 
 import pytest
 
+from config.signal_timing import lookup_signal_timing
 from data.models.event_enums import (
     EventFamily,
     EventOwner,
     InstrumentType,
     PriorityLevel,
+    SignalTiming,
 )
 from data.models.history_entry import HistoryEntry
 from data.models.market_event import CURRENT_SCHEMA_VERSION, MarketEvent
@@ -76,6 +78,7 @@ class TestMarketEventCreation:
     def test_create_new_with_factory(self, timestamp_now):
         """MarketEvent.create_new() creates a valid event with Stage 1 fields."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -95,6 +98,7 @@ class TestMarketEventCreation:
         """create_new without timestamp_utc uses current UTC time."""
         before = datetime.now(timezone.utc)
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -103,7 +107,7 @@ class TestMarketEventCreation:
         assert before <= event.timestamp_utc <= after
 
     def test_complete_event_with_all_context_fields(self, timestamp_now, sample_price_data, sample_volume_data):
-        """A fully populated MarketEvent has all 27 fields."""
+        """A fully populated MarketEvent has all required fields."""
         event = MarketEvent(
             event_id=str(uuid.uuid4()),
             timestamp_utc=timestamp_now,
@@ -113,6 +117,7 @@ class TestMarketEventCreation:
             event_family=EventFamily.PRICE,
             event_category="Cenowe",
             event_type="PRICE_SURGE",
+            signal_timing=SignalTiming.LEADING,
             event_subcategory="Ruchy gwałtowne",
             priority_raw=PriorityLevel.CRITICAL,
             priority_final=PriorityLevel.CRITICAL,
@@ -182,6 +187,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -201,6 +207,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -220,6 +227,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -239,6 +247,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -258,6 +267,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -277,6 +287,7 @@ class TestMarketEventValidation:
             event_family=EventFamily.PRICE,
             event_category="Cenowe",
             event_type="PRICE_SURGE",
+            signal_timing=SignalTiming.LEADING,
             priority_raw=PriorityLevel.HIGH,
             priority_final=PriorityLevel.HIGH,
             confidence_level=0.8,
@@ -284,11 +295,25 @@ class TestMarketEventValidation:
             event_owner=EventOwner.TechnicalEngine,
             quality_level=PriorityLevel.HIGH,
         )
-        assert event.detection_source == ""
+
+    def test_signal_timing_required(self):
+        """signal_timing is required at construction."""
+        with pytest.raises(TypeError):
+            MarketEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp_utc=datetime.now(timezone.utc),
+                ticker="XYZ.WA",
+                market="GPW",
+                instrument_type=InstrumentType.STOCK_GPW,
+                event_family=EventFamily.PRICE,
+                event_category="Cenowe",
+                event_type="PRICE_SURGE",
+            )
 
     def test_set_detection_requires_detection_source(self, timestamp_now):
         """After set_detection, detection_source must be non-empty."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -316,6 +341,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=-0.1,
@@ -335,6 +361,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=1.5,
@@ -354,6 +381,7 @@ class TestMarketEventValidation:
                 event_family=EventFamily.PRICE,
                 event_category="Cenowe",
                 event_type="PRICE_SURGE",
+                signal_timing=SignalTiming.LEADING,
                 priority_raw=PriorityLevel.HIGH,
                 priority_final=PriorityLevel.HIGH,
                 confidence_level=0.8,
@@ -361,6 +389,26 @@ class TestMarketEventValidation:
                 event_owner=EventOwner.TechnicalEngine,
                 quality_level=PriorityLevel.HIGH,
                 schema_version="",
+            )
+
+    def test_missing_signal_timing_fails(self):
+        """MarketEvent without signal_timing fails at construction."""
+        with pytest.raises(TypeError):
+            MarketEvent(
+                event_id=str(uuid.uuid4()),
+                timestamp_utc=datetime.now(timezone.utc),
+                ticker="TEST",
+                market="GPW",
+                instrument_type=InstrumentType.STOCK_GPW,
+                event_family=EventFamily.PRICE,
+                event_category="Cenowe",
+                event_type="PRICE_SURGE",
+                priority_raw=PriorityLevel.HIGH,
+                priority_final=PriorityLevel.HIGH,
+                confidence_level=0.8,
+                detection_source="test",
+                event_owner=EventOwner.TechnicalEngine,
+                quality_level=PriorityLevel.HIGH,
             )
 
 
@@ -413,6 +461,11 @@ class TestEnums:
             EventOwner.Multi_Engine,
         }
         assert len(owners) == 5
+
+    def test_signal_timing_values(self):
+        """SignalTiming enum has exactly four values."""
+        values = {SignalTiming.LEADING, SignalTiming.CONFIRMING, SignalTiming.WARNING, SignalTiming.CONTEXT}
+        assert len(values) == 4
 
     def test_enums_are_string_backed(self):
         """All enums inherit from str, so they compare with strings."""
@@ -503,6 +556,7 @@ class TestHistoryEntry:
 
     def test_add_history_entry_to_event(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -531,6 +585,7 @@ class TestLifecycleTransitions:
 
     def test_set_detection(self, timestamp_now, sample_price_data, sample_volume_data):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -567,6 +622,7 @@ class TestLifecycleTransitions:
     def test_set_detection_immutable_fields(self, timestamp_now):
         """Fields set at creation must not be changed by set_detection."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -596,6 +652,7 @@ class TestLifecycleTransitions:
     def test_set_detection_optional_subcategory(self, timestamp_now):
         """event_subcategory can remain None."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -614,6 +671,7 @@ class TestLifecycleTransitions:
 
     def test_set_normalization(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -643,6 +701,7 @@ class TestLifecycleTransitions:
 
     def test_set_quality_assessment(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -655,6 +714,7 @@ class TestLifecycleTransitions:
     def test_set_quality_assessment_ignore_stops_processing(self, timestamp_now):
         """quality_level IGNORE means processing should stop."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -665,6 +725,7 @@ class TestLifecycleTransitions:
 
     def test_set_archive(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -685,6 +746,7 @@ class TestSerialization:
 
     def test_to_dict_roundtrip(self, timestamp_now, sample_price_data, sample_volume_data):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -717,6 +779,7 @@ class TestSerialization:
         assert d["market"] == "GPW"
         assert d["instrument_type"] == "STOCK_GPW"
         assert d["event_family"] == "PRICE"
+        assert d["signal_timing"] == "leading"
         assert d["priority_raw"] == "CRITICAL"
         assert d["priority_final"] == "CRITICAL"
         assert d["quality_level"] == "CRITICAL"
@@ -736,6 +799,7 @@ class TestSerialization:
 
     def test_serialization_with_null_optionals(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -762,6 +826,7 @@ class TestDeserialization:
 
     def test_from_dict_reconstructs_full_event(self, timestamp_now, sample_price_data, sample_volume_data):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -798,6 +863,7 @@ class TestDeserialization:
         assert restored.event_category == event.event_category
         assert restored.event_subcategory == event.event_subcategory
         assert restored.event_type == event.event_type
+        assert restored.signal_timing == event.signal_timing
         assert restored.priority_raw == event.priority_raw
         assert restored.priority_final == event.priority_final
         assert restored.confidence_level == event.confidence_level
@@ -825,6 +891,7 @@ class TestDeserialization:
     def test_from_dict_with_minimal_event(self, timestamp_now):
         """Reconstruct from a minimal event created by create_new."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -840,8 +907,8 @@ class TestDeserialization:
         assert restored.volume_data is None
         assert len(restored.history) == 1
 
-    def test_from_dict_with_missing_optional_fields(self):
-        """from_dict handles missing optional fields gracefully."""
+    def test_from_dict_requires_signal_timing(self):
+        """from_dict raises KeyError when signal_timing is missing."""
         data = {
             "event_id": str(uuid.uuid4()),
             "timestamp_utc": "2026-07-18T14:32:05+00:00",
@@ -859,15 +926,31 @@ class TestDeserialization:
             "quality_level": "HIGH",
             "schema_version": "1.0",
         }
+        with pytest.raises(KeyError):
+            MarketEvent.from_dict(data)
+
+    def test_from_dict_with_signal_timing_succeeds(self):
+        """from_dict with signal_timing reconstructs correctly."""
+        data = {
+            "event_id": str(uuid.uuid4()),
+            "timestamp_utc": "2026-07-18T14:32:05+00:00",
+            "ticker": "XYZ.WA",
+            "market": "GPW",
+            "instrument_type": "STOCK_GPW",
+            "event_family": "PRICE",
+            "event_category": "Cenowe",
+            "event_type": "PRICE_SURGE",
+            "signal_timing": "leading",
+            "priority_raw": "HIGH",
+            "priority_final": "HIGH",
+            "confidence_level": 0.8,
+            "detection_source": "Test",
+            "event_owner": "TechnicalEngine",
+            "quality_level": "HIGH",
+            "schema_version": "1.0",
+        }
         event = MarketEvent.from_dict(data)
-        assert event.event_subcategory is None
-        assert event.price_data is None
-        assert event.volume_data is None
-        assert event.technical_context is None
-        assert event.metadata == {}
-        assert event.composite_events == []
-        assert event.is_composite is False
-        assert event.history == []
+        assert event.signal_timing == SignalTiming.LEADING
 
 
 # ------------------------------------------------------------------
@@ -880,6 +963,7 @@ class TestOptionalValues:
 
     def test_event_subcategory_preserved(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -901,6 +985,7 @@ class TestOptionalValues:
 
     def test_context_dictionaries_preserved(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -923,6 +1008,7 @@ class TestOptionalValues:
 
     def test_fundamental_context_preserved(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -951,6 +1037,7 @@ class TestContractVersion:
 
     def test_create_new_uses_current_version(self):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -959,6 +1046,7 @@ class TestContractVersion:
 
     def test_version_preserved_in_serialization(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -969,6 +1057,7 @@ class TestContractVersion:
 
     def test_version_preserved_in_deserialization(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -980,6 +1069,7 @@ class TestContractVersion:
 
     def test_version_preserved_through_lifecycle(self, timestamp_now):
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="XYZ.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,

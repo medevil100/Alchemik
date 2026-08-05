@@ -15,7 +15,7 @@ from data.models.ai_signal import AISignal
 from data.models.analysis_result import AnalysisResult
 from data.models.market_event import MarketEvent
 from data.models.pipeline_decision import PipelineDecision
-from data.models.event_enums import PriorityLevel
+from data.models.event_enums import PriorityLevel, SignalTiming
 from engines.technical import TechnicalEngine
 from engines.news import NewsPipeline
 
@@ -39,6 +39,7 @@ class DecisionEngine:
         technical_keys: list,
         news_count: int,
         tavily_context: Optional[dict] = None,
+        signal_timing: Optional[SignalTiming] = None,
     ) -> AISignal:
         """
         Build a placeholder AISignal — the single factory for all execution paths.
@@ -50,6 +51,7 @@ class DecisionEngine:
             news_count: Number of news items available (0 if none).
             tavily_context: Optional Tavily search context dict
                 (from MarketEvent.tavily_context after KROK 4A).
+            signal_timing: Optional SignalTiming class from MarketEvent.
 
         Returns:
             AISignal with placeholder confidence and generated reasoning.
@@ -60,6 +62,12 @@ class DecisionEngine:
             f"Technical indicators: {technical_desc}.",
             f"News items: {news_count}.",
         ]
+
+        # Append SignalTiming information when present
+        if signal_timing is not None:
+            reasoning_parts.append(
+                f"Signal timing: {signal_timing.value}."
+            )
 
         # Append Tavily section only when context is present and non-empty
         tavily_text = DecisionEngine._format_tavily_context(tavily_context)
@@ -184,6 +192,7 @@ class DecisionEngine:
                 technical_keys=list(technical.keys()),
                 news_count=news_count,
                 tavily_context=tavily_context,
+                signal_timing=event.signal_timing,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to process MarketEvent: {e}")

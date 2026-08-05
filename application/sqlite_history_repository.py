@@ -37,7 +37,7 @@ class SQLiteHistoryRepository:
     # Schema
     # ------------------------------------------------------------------
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     SQL_CREATE_TABLES = """
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -67,6 +67,7 @@ class SQLiteHistoryRepository:
             event_category TEXT,
             event_type TEXT,
             event_subcategory TEXT,
+            signal_timing TEXT,
             priority_raw TEXT,
             priority_final TEXT,
             confidence_level REAL,
@@ -87,6 +88,19 @@ class SQLiteHistoryRepository:
         PRAGMA journal_mode=WAL;
         PRAGMA busy_timeout=5000;
         PRAGMA foreign_keys=ON;
+    """
+
+    SQL_MIGRATE_ADD_SIGNAL_TIMING = """
+        ALTER TABLE market_events ADD COLUMN signal_timing TEXT
+    """
+
+    SQL_SELECT_EVENTS_WITHOUT_TIMING = """
+        SELECT id, event_json FROM market_events
+        WHERE signal_timing IS NULL OR signal_timing = ''
+    """
+
+    SQL_UPDATE_SIGNAL_TIMING = """
+        UPDATE market_events SET signal_timing = ? WHERE id = ?
     """
 
     def _initialize_database(self):
@@ -116,6 +130,68 @@ class SQLiteHistoryRepository:
                 )
 
             conn.commit()
+        finally:
+            conn.close()
+
+        # Run migration to add signal_timing column (idempotent)
+        self._migrate_signal_timing()
+
+    def _column_exists(self, cursor, table: str, column: str) -> bool:
+        """Check whether *column* already exists in *table*."""
+        cursor.execute(f"PRAGMA table_info({table})")
+        return any(row[1] == column for row in cursor.fetchall())
+
+    def _migrate_signal_timing(self) -> None:
+        """
+        Migrate: add ``signal_timing`` column + backfill existing rows.
+
+        This is idempotent — calling it multiple times is safe.
+        Existing rows are classified using the canonical
+        ``config.signal_timing.lookup_signal_timing()`` mapping
+        based on the stored ``event_type`` from ``event_json``.
+        """
+        from config.signal_timing import lookup_signal_timing
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+
+            # 1. Add column if it doesn't exist
+            if not self._column_exists(cursor, "market_events", "signal_timing"):
+                cursor.execute(self.SQL_MIGRATE_ADD_SIGNAL_TIMING)
+                logger.info("Migration: added signal_timing column to market_events")
+
+            # 2. Backfill existing rows
+            cursor.execute(self.SQL_SELECT_EVENTS_WITHOUT_TIMING)
+            rows = cursor.fetchall()
+
+            if rows:
+                updated = 0
+                for row_id, event_json_str in rows:
+                    event_data = json.loads(event_json_str)
+                    event_type = event_data.get("event_type")
+                    if not event_type:
+                        raise ValueError(
+                            f"Migration error: row id={row_id} has no event_type "
+                            f"in event_json. Cannot classify signal_timing."
+                        )
+                    timing = lookup_signal_timing(event_type)
+                    cursor.execute(
+                        self.SQL_UPDATE_SIGNAL_TIMING,
+                        (timing.value, row_id),
+                    )
+                    updated += 1
+
+                logger.info(
+                    "Migration: backfilled signal_timing for %d existing rows",
+                    updated,
+                )
+
+            conn.commit()
+        except Exception:
+            logger.exception("Migration signal_timing failed")
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -337,10 +413,10 @@ class SQLiteHistoryRepository:
                 INSERT INTO market_events (
                     cycle_id, event_id, ticker, market,
                     instrument_type, event_family, event_category,
-                    event_type, event_subcategory, priority_raw,
-                    priority_final, confidence_level, detection_source,
-                    event_owner, event_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    event_type, event_subcategory, signal_timing,
+                    priority_raw, priority_final, confidence_level,
+                    detection_source, event_owner, event_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cycle_id,
@@ -352,6 +428,7 @@ class SQLiteHistoryRepository:
                     event_data.get("event_category"),
                     event_data.get("event_type"),
                     event_data.get("event_subcategory"),
+                    event_data.get("signal_timing"),
                     event_data.get("priority_raw"),
                     event_data.get("priority_final"),
                     event_data.get("confidence_level", 0.0),
@@ -392,10 +469,10 @@ class SQLiteHistoryRepository:
                     INSERT INTO market_events (
                         cycle_id, event_id, ticker, market,
                         instrument_type, event_family, event_category,
-                        event_type, event_subcategory, priority_raw,
-                        priority_final, confidence_level, detection_source,
-                        event_owner, event_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        event_type, event_subcategory, signal_timing,
+                        priority_raw, priority_final, confidence_level,
+                        detection_source, event_owner, event_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         cycle_id,
@@ -407,6 +484,7 @@ class SQLiteHistoryRepository:
                         event_data.get("event_category"),
                         event_data.get("event_type"),
                         event_data.get("event_subcategory"),
+                        event_data.get("signal_timing"),
                         event_data.get("priority_raw"),
                         event_data.get("priority_final"),
                         event_data.get("confidence_level", 0.0),

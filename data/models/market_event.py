@@ -16,7 +16,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from .event_enums import EventFamily, EventOwner, InstrumentType, PriorityLevel
+from .event_enums import (
+    EventFamily,
+    EventOwner,
+    InstrumentType,
+    PriorityLevel,
+    SignalTiming,
+)
 from .history_entry import HistoryEntry
 from .price_data import PriceData
 from .volume_data import VolumeData
@@ -46,6 +52,7 @@ class MarketEvent:
     event_family: EventFamily
     event_category: str
     event_type: str
+    signal_timing: SignalTiming
     event_subcategory: Optional[str] = None
 
     # --- Priority & confidence (fields 10-12) ---
@@ -82,6 +89,7 @@ class MarketEvent:
         """Validate required fields and invariants after initialization."""
         self._validate_required_fields()
         self._validate_confidence_level()
+        self._validate_signal_timing()
 
     # ------------------------------------------------------------------
     # Validation
@@ -127,6 +135,13 @@ class MarketEvent:
                 f"confidence_level must be between 0.0 and 1.0, got {self.confidence_level}"
             )
 
+    def _validate_signal_timing(self):
+        """Ensure signal_timing is a valid SignalTiming enum value."""
+        if not isinstance(self.signal_timing, SignalTiming):
+            raise ValueError(
+                f"signal_timing must be a SignalTiming, got {type(self.signal_timing).__name__}"
+            )
+
     # ------------------------------------------------------------------
     # Factory — minimal creation (Stage 1: MarketScanner / HunterEngine)
     # ------------------------------------------------------------------
@@ -137,6 +152,7 @@ class MarketEvent:
         ticker: str,
         market: str,
         instrument_type: InstrumentType,
+        event_type: str,
         timestamp_utc: Optional[datetime] = None,
     ) -> "MarketEvent":
         """
@@ -144,20 +160,29 @@ class MarketEvent:
 
         This corresponds to the first step of the lifecycle where MarketScanner
         or HunterEngine creates the initial event object with identification
-        fields only.
+        fields only.  The ``event_type`` must be a canonical type from the
+        catalogue — ``EVENT_CREATED`` is a technical placeholder and must not
+        be passed here.
+
+        ``signal_timing`` is computed automatically from the canonical mapping.
 
         Args:
             ticker: Instrument symbol (e.g., "XYZ.WA")
             market: Market identifier (e.g., "GPW", "NYSE")
             instrument_type: Type of instrument (STOCK_GPW, STOCK_USA, ETF)
+            event_type: Canonical event type (must be in SIGNAL_TIMING_MAP).
             timestamp_utc: Optional timestamp; defaults to current UTC time.
 
         Returns:
             A new MarketEvent with identification fields set and an initial
             history entry recording the creation.
         """
+        from config.signal_timing import lookup_signal_timing
+
         if timestamp_utc is None:
             timestamp_utc = datetime.now(timezone.utc)
+
+        timing = lookup_signal_timing(event_type)
 
         event = cls(
             event_id=str(uuid.uuid4()),
@@ -167,7 +192,8 @@ class MarketEvent:
             instrument_type=instrument_type,
             event_family=EventFamily.SYSTEM,
             event_category="System",
-            event_type="EVENT_CREATED",
+            event_type=event_type,
+            signal_timing=timing,
             priority_raw=PriorityLevel.LOW,
             priority_final=PriorityLevel.LOW,
             confidence_level=0.0,
@@ -185,6 +211,8 @@ class MarketEvent:
                 "ticker",
                 "market",
                 "instrument_type",
+                "event_type",
+                "signal_timing",
                 "schema_version",
             ],
         )
@@ -362,6 +390,7 @@ class MarketEvent:
             "event_category": self.event_category,
             "event_subcategory": self.event_subcategory,
             "event_type": self.event_type,
+            "signal_timing": self.signal_timing.value,
             "priority_raw": self.priority_raw.value,
             "priority_final": self.priority_final.value,
             "confidence_level": self.confidence_level,
@@ -400,6 +429,7 @@ class MarketEvent:
             event_category=data["event_category"],
             event_subcategory=data.get("event_subcategory"),
             event_type=data["event_type"],
+            signal_timing=SignalTiming(data["signal_timing"]),
             priority_raw=PriorityLevel(data["priority_raw"]),
             priority_final=PriorityLevel(data["priority_final"]),
             confidence_level=float(data["confidence_level"]),

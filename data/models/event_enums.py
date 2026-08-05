@@ -2,6 +2,7 @@
 Enum definitions for the MarketEvent system.
 
 Defines all enumerations specified in the Kontrakt Zdarzen Rynkowych:
+- SignalTiming: canonical timing role of event_type
 - InstrumentType: classification of financial instruments
 - EventFamily: top-level logical classification of events
 - PriorityLevel: priority and quality levels (shared enum)
@@ -9,6 +10,22 @@ Defines all enumerations specified in the Kontrakt Zdarzen Rynkowych:
 """
 
 from enum import Enum
+
+
+class SignalTiming(str, Enum):
+    """
+    Canonical timing role of an event_type relative to a developing
+    market situation.
+
+    Each event_type has exactly one immutable SignalTiming class.
+    The class is NOT a hierarchy — no ordering, weighting, or
+    comparison between values is permitted.
+    """
+
+    LEADING = "leading"
+    CONFIRMING = "confirming"
+    WARNING = "warning"
+    CONTEXT = "context"
 
 
 class InstrumentType(str, Enum):
