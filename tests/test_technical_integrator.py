@@ -45,6 +45,7 @@ from application.technical_integrator import TechnicalIntegrator
 def sample_market_event() -> MarketEvent:
     """Return a valid MarketEvent in the detection stage."""
     event = MarketEvent.create_new(
+        event_type="PRICE_SURGE",
         ticker="XYZ.WA",
         market="GPW",
         instrument_type=InstrumentType.STOCK_GPW,
@@ -66,6 +67,7 @@ def sample_market_event() -> MarketEvent:
 def sample_rejected_event() -> MarketEvent:
     """Return a MarketEvent rejected by quality assessment (IGNORE)."""
     event = MarketEvent.create_new(
+        event_type="PRICE_SURGE",
         ticker="IGNORE.WA",
         market="GPW",
         instrument_type=InstrumentType.STOCK_GPW,
@@ -250,6 +252,7 @@ def test_rejected_event_still_can_trigger_analysis(
     event still CAN be integrated — the integrator does not block it.
     """
     event = MarketEvent.create_new(
+        event_type="PRICE_SURGE",
         ticker="REJECT.WA",
         market="GPW",
         instrument_type=InstrumentType.STOCK_GPW,

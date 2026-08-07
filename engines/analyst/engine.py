@@ -68,12 +68,21 @@ class AnalystEngine:
         if not isinstance(hunter_result, HunterResult):
             raise TypeError("hunter_result must be a HunterResult instance")
 
+        # Compute confidence from AnalysisResult.signals (AISignal.confidence).
+        # This is the same source RiskEngine uses: signals[0].confidence.
+        ai_confidence: float = 0.0
+        if analysis_result.signals:
+            ai_confidence = analysis_result.signals[0].confidence
+
+        # Data completeness: proportional to available market_data and signals.
+        data_ok: float = 1.0 if analysis_result.market_data and analysis_result.signals else 0.0
+
         # Calculate final score (0.0-1.0)
         final_score = (
             ranking_result.score * FINAL_SCORE_WEIGHTS["ranking_score"] +
             (1 - risk_result.risk_score) * FINAL_SCORE_WEIGHTS["risk_score"] +
             hunter_result.hunter_score * FINAL_SCORE_WEIGHTS["hunter_score"] +
-            analysis_result.confidence_level * FINAL_SCORE_WEIGHTS["confidence_level"]
+            ai_confidence * FINAL_SCORE_WEIGHTS["confidence_level"]
         )
 
         # Determine recommendation
@@ -91,15 +100,15 @@ class AnalystEngine:
             positive_factors.append(f"Low risk score ({risk_result.risk_score:.2f})")
         if hunter_result.hunter_score >= POSITIVE_FACTORS_THRESHOLDS["HIGH_HUNTER"]:
             positive_factors.append(f"High hunter score ({hunter_result.hunter_score:.2f})")
-        if analysis_result.confidence_level >= POSITIVE_FACTORS_THRESHOLDS["HIGH_CONFIDENCE"]:
-            positive_factors.append(f"High confidence ({analysis_result.confidence_level:.2f})")
+        if ai_confidence >= POSITIVE_FACTORS_THRESHOLDS["HIGH_CONFIDENCE"]:
+            positive_factors.append(f"High confidence ({ai_confidence:.2f})")
 
         # Gather risk factors
         risk_factors = []
         if risk_result.risk_score >= RISK_FACTORS_THRESHOLDS["HIGH_RISK"]:
             risk_factors.append(f"High risk score ({risk_result.risk_score:.2f})")
-        if analysis_result.confidence_level <= RISK_FACTORS_THRESHOLDS["LOW_CONFIDENCE"]:
-            risk_factors.append(f"Low confidence ({analysis_result.confidence_level:.2f})")
+        if ai_confidence <= RISK_FACTORS_THRESHOLDS["LOW_CONFIDENCE"]:
+            risk_factors.append(f"Low confidence ({ai_confidence:.2f})")
         if ranking_result.score <= RISK_FACTORS_THRESHOLDS["LOW_RANKING"]:
             risk_factors.append(f"Low ranking score ({ranking_result.score:.2f})")
         if hunter_result.hunter_score <= RISK_FACTORS_THRESHOLDS["LOW_HUNTER"]:
@@ -109,10 +118,10 @@ class AnalystEngine:
         warnings = hunter_result.warnings.copy() if hunter_result.warnings else []
         if risk_result.risk_score >= WARNINGS_THRESHOLDS["CRITICAL_RISK"]:
             warnings.append(f"Critical risk level ({risk_result.risk_score:.2f})")
-        if analysis_result.confidence_level <= WARNINGS_THRESHOLDS["LOW_CONFIDENCE"]:
-            warnings.append(f"Low confidence level ({analysis_result.confidence_level:.2f})")
-        if analysis_result.data_completeness <= WARNINGS_THRESHOLDS["DATA_INCOMPLETE"]:
-            warnings.append(f"Incomplete data ({analysis_result.data_completeness:.2f}%)")
+        if ai_confidence <= WARNINGS_THRESHOLDS["LOW_CONFIDENCE"]:
+            warnings.append(f"Low confidence level ({ai_confidence:.2f})")
+        if data_ok <= WARNINGS_THRESHOLDS["DATA_INCOMPLETE"]:
+            warnings.append(f"Incomplete data ({data_ok:.2f})")
 
         # Generate summary
         summary = (
@@ -124,7 +133,7 @@ class AnalystEngine:
         return FinalAnalysisResult(
             symbol=symbol,
             final_rating=final_score,
-            confidence_level=analysis_result.confidence_level,
+            confidence_level=ai_confidence,
             recommendation=recommendation,
             positive_factors=positive_factors,
             risk_factors=risk_factors,

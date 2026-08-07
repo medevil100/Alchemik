@@ -28,7 +28,10 @@ from engines.detectors import (
     SystemEventDetector,
     TechnicalEventDetector,
 )
+from config.signal_timing import lookup_signal_timing
 from data.models import FinalAnalysisResult, MarketData, MarketEvent, InstrumentType
+from data.models.company_info import CompanyInfo
+from data.models.hunter_result import HunterResult
 from data.models.pipeline_decision import PipelineDecision
 from data.models.analysis_result import AnalysisResult
 from data.models.event_enums import EventFamily, EventOwner, PriorityLevel
@@ -292,6 +295,7 @@ def _result_to_market_event(
         ticker=ticker,
         market=market,
         instrument_type=instrument_type,
+        event_type=result.event_type,
         timestamp_utc=datetime.now(timezone.utc),
     )
     event.set_detection(
@@ -641,17 +645,63 @@ class MasterEngine:
                 "symbol": symbol, "technical": technical_result, "news": news_result
             })
 
+        # Build a complete AnalysisResult for RankingEngine and RiskEngine.
+        # technical_result carries market_data and (dynamically) indicators;
+        # company is filled from the symbol/metadata available in run_analysis();
+        # AISignal is appended to signals so that RiskEngine has access.
+        analysis_result = technical_result
+        if analysis_result.company is None:
+            analysis_result.company = CompanyInfo(
+                name=symbol,
+                symbol=symbol,
+            )
+        analysis_result.signals.append(ai_result)
+
         # Step 5: Ranking Engine
-        ranking_result = self.ranking_engine.calculate_ranking([ai_result])
+        ranking_result = self.ranking_engine.calculate_ranking([analysis_result])
 
         # Step 6: Risk Engine
-        risk_result = self.risk_engine.assess_risk(ai_result, ranking_result)
+        risk_result = self.risk_engine.assess_risk(analysis_result, ranking_result)
 
         # Step 7: Hunter Engine
-        hunter_result = self.hunter_engine.scan([{"symbol": symbol, "risk": risk_result, "ranking": ranking_result}])
+        # Map to HunterEngine's expected dict keys: instrument_id, ranking_score,
+        # risk_score, confidence (not symbol/risk/ranking objects).
+        hunter_scan = self.hunter_engine.scan([
+            {
+                "instrument_id": symbol,
+                "ranking_score": ranking_result.results[0].score if ranking_result.results else 0,
+                "risk_score": risk_result.risk_score,
+                "confidence": analysis_result.signals[0].confidence if analysis_result.signals else 0,
+            }
+        ])
+
+        # Extract the single HunterResult for this ticker (or provide a neutral fallback).
+        if hunter_scan.qualified > 0:
+            single_hunter = hunter_scan.opportunities[0]
+        else:
+            single_hunter = HunterResult(
+                instrument_id=symbol,
+                hunter_score=0.0,
+                priority=3,
+                ranking_score=0.0,
+                risk_score=0.0,
+                risk_level="",
+                confidence=0.0,
+                reasons=[],
+                warnings=[],
+                timestamp=datetime.now(timezone.utc),
+            )
 
         # Step 8: Analyst Engine
-        analyst_result = self.analyst_engine.generate_analysis(hunter_result)
+        # AnalystEngine expects RankingResult (single), not FullRanking.
+        # MasterEngine processes one symbol at a time — extract the first (and only) result.
+        analyst_result = self.analyst_engine.generate_analysis(
+            symbol=symbol,
+            analysis_result=analysis_result,
+            ranking_result=ranking_result.results[0] if ranking_result.results else None,
+            risk_result=risk_result,
+            hunter_result=single_hunter,
+        )
 
         return FinalAnalysisResult(
             symbol=symbol,

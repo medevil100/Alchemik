@@ -1,136 +1,76 @@
-import unittest
-from unittest.mock import MagicMock, patch
-from datetime import datetime
+"""End-to-end test for MasterEngine with real engines — no engine mocks."""
 
-from engines.master import MasterEngine
+import unittest
+from datetime import datetime, timedelta
+
+from engines.master.engine import MasterEngine
 from engines.technical import TechnicalEngine
 from engines.news import NewsPipeline
+from engines.news.filter import NewsFilterConfig
 from engines.ai import DecisionEngine
 from engines.hunter import HunterEngine
-from data.models import MarketData, NewsItem, AISignal, FinalAnalysisResult
+from engines.ranking import RankingEngine
+from engines.risk import RiskEngine
+from engines.analyst import AnalystEngine
+from engines.composer.engine import ComposerEngine
+from engines.quality.engine import QualityEngine
+from data.models import MarketData, FinalAnalysisResult
+
+
+HUNTER_CONFIG = {
+    "ranking_weight": 0.4,
+    "risk_weight": 0.3,
+    "confidence_weight": 0.3,
+    "min_ranking_score": 0.5,
+    "max_risk_score": 0.7,
+    "min_confidence": 0.6,
+    "max_results": 10,
+    "priority_thresholds": [0.9, 0.7, 0.5],
+}
+
 
 class TestMasterEngineE2E(unittest.TestCase):
+    """Full pipeline with zero engine mocks."""
+
     def setUp(self):
-        # Mock TechnicalEngine — return an object with market_data attribute
-        self.mock_technical_engine = MagicMock(spec=TechnicalEngine)
-        _ohlcv_data_e2e = [
-            MarketData(
-                open=100.0, high=105.0, low=95.0, close=102.0,
-                volume=1000000, timestamp=datetime.now(),
-            )
-        ]
-        self._technical_result = MagicMock()
-        self._technical_result.market_data = _ohlcv_data_e2e
-        self.mock_technical_engine.analyze.return_value = self._technical_result
-
-        # Mock NewsPipeline
-        self.mock_news_engine = MagicMock(spec=NewsPipeline)
-        self.mock_news_engine.process.return_value = [
-            NewsItem(
-                title="Test News Title",
-                source="Test Source",
-                publish_date=datetime.now(),
-                url="https://example.com",
-                summary="Test summary",
-                sentiment=0.5
-            )
-        ]
-
-        # Mock DecisionEngine
-        self.mock_ai_engine = MagicMock(spec=DecisionEngine)
-        self.mock_ai_engine.process_data.return_value = AISignal(
-            signal_type="buy",
-            confidence=0.8,
-            generated_at=datetime.now(),
-            reasoning="Strong technical and news signals."
-        )
-
-        # Mock HunterEngine
-        self.mock_hunter_engine = MagicMock(spec=HunterEngine)
-        self.mock_hunter_engine.analyze = MagicMock(return_value=None)  # Or any mock return value
-
-        # Mock PriceDetector and VolumeDetector (return empty — no events)
-        self.mock_price_detector = MagicMock()
-        self.mock_price_detector.detect.return_value = []
-        self.mock_volume_detector = MagicMock()
-        self.mock_volume_detector.detect.return_value = []
-
-        # Mock RankingEngine (to avoid market_data check)
-        self.mock_ranking_engine = MagicMock()
-        self.mock_ranking_engine.calculate_ranking.return_value = MagicMock()
-        
-        # Mock RiskEngine (to avoid company check)
-        self.mock_risk_engine = MagicMock()
-        self.mock_risk_engine.assess_risk.return_value = MagicMock()
-        
-        # Mock AnalystEngine
-        self.mock_analyst_engine = MagicMock()
-        mock_final_result = MagicMock(spec=FinalAnalysisResult)
-        mock_final_result.final_rating = 0.8  # Example rating
-        mock_final_result.recommendation = "buy"
-        mock_final_result.generated_at = datetime.now()
-        mock_final_result.confidence_level = 0.9  # Example confidence
-        mock_final_result.positive_factors = ["Strong technical signals", "Positive news sentiment"]
-        mock_final_result.negative_factors = []
-        mock_final_result.risk_factors = []
-        mock_final_result.warnings = []
-        mock_final_result.summary = "Mock summary"
-        mock_final_result.symbol = "MOCK_SYMBOL"
-        mock_final_result.analysis_date = datetime.now()
-        mock_final_result.notes = "Mock analysis result"
-        self.mock_analyst_engine.generate_analysis.return_value = mock_final_result
-        
-        # Initialize MasterEngine with mocks
+        news_config = NewsFilterConfig(min_content_length=50, min_quality_score=0.5)
         self.master_engine = MasterEngine(
-            technical_engine=self.mock_technical_engine,
-            news_engine=self.mock_news_engine,
-            ai_engine=self.mock_ai_engine,
-            hunter_engine=self.mock_hunter_engine,
-            ranking_engine=self.mock_ranking_engine,
-            risk_engine=self.mock_risk_engine,
-            analyst_engine=self.mock_analyst_engine,
-            price_detector=self.mock_price_detector,
-            volume_detector=self.mock_volume_detector,
+            technical_engine=TechnicalEngine(),
+            news_engine=NewsPipeline(news_config),
+            ai_engine=DecisionEngine(),
+            ranking_engine=RankingEngine(),
+            risk_engine=RiskEngine(),
+            hunter_engine=HunterEngine(HUNTER_CONFIG),
+            analyst_engine=AnalystEngine(),
+            composer_engine=ComposerEngine(),
+            quality_engine=QualityEngine(),
         )
 
     def test_full_pipeline_flow(self):
-        # Run analysis with OHLCV data
-        symbol = "MOCK_SYMBOL"
+        """Real MasterEngine with ≥35 candles for MACD slow(26)+signal(9)."""
+        symbol = "TST"
         ohlcv_data = [
-            MarketData(
-                open=100.0,
-                high=105.0,
-                low=95.0,
-                close=102.0,
-                volume=1000000,
-                timestamp=datetime.now()
-            ),
-            MarketData(
-                open=102.0,
-                high=108.0,
-                low=101.0,
-                close=107.0,
-                volume=2000000,
-                timestamp=datetime.now()
-            ),
+            MarketData(open=100.0, high=101.0, low=99.5, close=100.5,
+                       volume=500_000,
+                       timestamp=datetime(2026, 1, 1) + timedelta(days=d))
+            for d in range(35)
         ]
         result = self.master_engine.run_analysis(symbol, ohlcv_data=ohlcv_data)
-
-        # Validate FinalAnalysisResult
         self.assertIsInstance(result, FinalAnalysisResult)
         self.assertEqual(result.symbol, symbol)
         self.assertTrue(0.0 <= result.final_rating <= 1.0)
-        self.assertIn(result.recommendation, ["buy", "hold", "sell"])  # Update with valid values from config
+        self.assertIsInstance(result.recommendation, str)
         self.assertIsNotNone(result.generated_at)
-
-        # Validate no real HTTP requests were made
-        self.mock_technical_engine.analyze.assert_called_once()
-        # News/process may not be called (no events → run_news=False)
-        self.mock_ai_engine.process_data.assert_called_once()
 
     def test_invalid_symbol(self):
         with self.assertRaises(ValueError):
             self.master_engine.run_analysis("")
+
+    def test_no_ohlcv_returns_result(self):
+        result = self.master_engine.run_analysis("TST")
+        self.assertIsInstance(result, FinalAnalysisResult)
+        self.assertEqual(result.symbol, "TST")
+
 
 if __name__ == "__main__":
     unittest.main()

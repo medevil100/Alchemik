@@ -63,6 +63,7 @@ def _make_event(
         ticker=ticker,
         market=market,
         instrument_type=instrument_type,
+        event_type=event_type,
         timestamp_utc=timestamp,
     )
     evt.set_detection(

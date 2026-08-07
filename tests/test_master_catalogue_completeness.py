@@ -213,6 +213,42 @@ class TestCatalogueCompleteness(unittest.TestCase):
             f"{[d.detector_id for d in self.detectors]}"
         )
 
+    # ------------------------------------------------------------------
+    # TechnicalEventDetector — all event_types are in _CATALOGUE
+    # ------------------------------------------------------------------
+
+    def test_all_technical_events_in_catalogue(self):
+        """
+        Every event_type declared by TechnicalEventDetector MUST be
+        present in _CATALOGUE with the correct EventFamily.
+
+        This is a stricter version of
+        ``test_every_declared_event_type_in_catalogue`` — it additionally
+        verifies that the EventFamily matches TECHNICAL (not SYSTEM).
+        """
+        from engines.detectors.technical_detector import TechnicalEventDetector
+
+        detector = TechnicalEventDetector()
+        tech_types = set(detector.event_types)
+
+        missing = tech_types - self.catalogue_keys
+        self.assertEqual(
+            len(missing), 0,
+            f"{len(missing)} TechnicalEventDetector event_type(s) MISSING from "
+            f"_CATALOGUE: {sorted(missing)}"
+        )
+
+        for et in tech_types:
+            entry = _CATALOGUE.get(et)
+            if entry is None:
+                continue  # already caught by the missing check above
+            family, _, _, _ = entry
+            self.assertEqual(
+                family, EventFamily.TECHNICAL,
+                f"_CATALOGUE[{et!r}] has EventFamily {family.value!r}, "
+                f"expected TECHNICAL"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

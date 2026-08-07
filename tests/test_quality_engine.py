@@ -31,6 +31,7 @@ def _make_event(
 ) -> MarketEvent:
     """Factory for a fully initialized MarketEvent ready for quality assessment."""
     event = MarketEvent.create_new(
+        event_type="PRICE_SURGE",
         ticker=ticker,
         market=market,
         instrument_type=instrument_type,
@@ -69,30 +70,35 @@ class TestQualityEngineNonComposite(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_critical_raw_maps_to_high_quality(self):
+        """CRITICAL → base HIGH, promoted to CRITICAL by LEADING signal_timing."""
         event = _make_event(priority_raw=PriorityLevel.CRITICAL, priority_final=PriorityLevel.CRITICAL)
+        result = self.engine.assess(event)
+        self.assertEqual(result.quality_level, PriorityLevel.CRITICAL)
+
+    def test_high_raw_maps_to_medium_quality(self):
+        """HIGH → base MEDIUM, promoted to HIGH by LEADING signal_timing."""
+        event = _make_event(priority_raw=PriorityLevel.HIGH, priority_final=PriorityLevel.HIGH)
         result = self.engine.assess(event)
         self.assertEqual(result.quality_level, PriorityLevel.HIGH)
 
-    def test_high_raw_maps_to_medium_quality(self):
-        event = _make_event(priority_raw=PriorityLevel.HIGH, priority_final=PriorityLevel.HIGH)
+    def test_medium_raw_maps_to_low_quality(self):
+        """MEDIUM → base LOW, promoted to MEDIUM by LEADING signal_timing."""
+        event = _make_event(priority_raw=PriorityLevel.MEDIUM, priority_final=PriorityLevel.MEDIUM)
         result = self.engine.assess(event)
         self.assertEqual(result.quality_level, PriorityLevel.MEDIUM)
 
-    def test_medium_raw_maps_to_low_quality(self):
-        event = _make_event(priority_raw=PriorityLevel.MEDIUM, priority_final=PriorityLevel.MEDIUM)
-        result = self.engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.LOW)
-
     def test_low_raw_maps_to_ignore_quality(self):
+        """LOW → base IGNORE, promoted to LOW by LEADING signal_timing."""
         event = _make_event(priority_raw=PriorityLevel.LOW, priority_final=PriorityLevel.LOW)
         result = self.engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.IGNORE)
+        self.assertEqual(result.quality_level, PriorityLevel.LOW)
 
     # ------------------------------------------------------------------
     # Instrument-specific profiles
     # ------------------------------------------------------------------
 
     def test_usa_instrument_uses_usa_profile(self):
+        """USA profile: CRITICAL → base HIGH, promoted to CRITICAL by LEADING."""
         event = _make_event(
             ticker="TST",
             market="NYSE",
@@ -101,9 +107,10 @@ class TestQualityEngineNonComposite(unittest.TestCase):
             priority_final=PriorityLevel.CRITICAL,
         )
         result = self.engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.HIGH)
+        self.assertEqual(result.quality_level, PriorityLevel.CRITICAL)
 
     def test_etf_instrument_uses_etf_profile(self):
+        """ETF profile: CRITICAL → base HIGH, promoted to CRITICAL by LEADING."""
         event = _make_event(
             ticker="SPY",
             market="NYSE",
@@ -112,7 +119,7 @@ class TestQualityEngineNonComposite(unittest.TestCase):
             priority_final=PriorityLevel.CRITICAL,
         )
         result = self.engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.HIGH)
+        self.assertEqual(result.quality_level, PriorityLevel.CRITICAL)
 
     # ------------------------------------------------------------------
     # Invariant preservation
@@ -265,6 +272,7 @@ class TestQualityEngineCustomConfig(unittest.TestCase):
     """Tests with a custom QualityConfig."""
 
     def test_custom_profile_respected(self):
+        """Custom profile: MEDIUM → base HIGH, promoted to CRITICAL by LEADING."""
         custom_profile = _InstrumentQualityProfile(
             non_composite_map={
                 PriorityLevel.CRITICAL: PriorityLevel.CRITICAL,
@@ -283,7 +291,7 @@ class TestQualityEngineCustomConfig(unittest.TestCase):
         engine = QualityEngine(config=custom_config)
         event = _make_event(priority_raw=PriorityLevel.MEDIUM, priority_final=PriorityLevel.MEDIUM)
         result = engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.HIGH)
+        self.assertEqual(result.quality_level, PriorityLevel.CRITICAL)
 
 
 class TestQualityEdgeCases(unittest.TestCase):
@@ -306,11 +314,12 @@ class TestQualityEdgeCases(unittest.TestCase):
     def test_ignore_level_stops_processing_meta(self):
         """
         quality_level IGNORE means processing stops.
+        With LEADING signal_timing, LOW is promoted to LOW (IGNORE → LOW).
         The quality_level itself must be set correctly.
         """
         event = _make_event(priority_raw=PriorityLevel.LOW, priority_final=PriorityLevel.LOW)
         result = self.engine.assess(event)
-        self.assertEqual(result.quality_level, PriorityLevel.IGNORE)
+        self.assertEqual(result.quality_level, PriorityLevel.LOW)
 
     def test_assess_is_idempotent(self):
         event = _make_event(priority_raw=PriorityLevel.HIGH, priority_final=PriorityLevel.HIGH)

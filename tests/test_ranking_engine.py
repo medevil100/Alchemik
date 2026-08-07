@@ -82,7 +82,7 @@ class TestRankingEngine(unittest.TestCase):
         self.assertGreater(ranking.results[0].score, ranking.results[1].score)
         
         # First should be INST1 (1.0*0.4 + 0.6*0.3 + 0.7*0.3 = 0.79)
-        self.assertEqual(ranking.results[0].symbol, "INST1")
+        self.assertEqual(ranking.results[0].instrument_id, "INST1")
         self.assertAlmostEqual(ranking.results[0].score, 0.79)
         
     def test_missing_data(self):
@@ -111,7 +111,7 @@ class TestRankingEngine(unittest.TestCase):
         ranking = self.engine.calculate_ranking(results)
         
         # Should still calculate score (1.0*0.4 + 0.7*0.3 = 0.61)
-        self.assertEqual(ranking.results[0].symbol, "INST1")
+        self.assertEqual(ranking.results[0].instrument_id, "INST1")
         self.assertAlmostEqual(ranking.results[0].score, 0.61)
 
 if __name__ == "__main__":

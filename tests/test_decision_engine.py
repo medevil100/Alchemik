@@ -41,6 +41,7 @@ def make_test_event(
 ) -> MarketEvent:
     """Create a minimal MarketEvent simulating a detected price surge."""
     event = MarketEvent.create_new(
+        event_type="PRICE_SURGE",
         ticker=ticker,
         market="GPW",
         instrument_type=InstrumentType.STOCK_GPW,
@@ -202,6 +203,7 @@ class TestDecisionEngineMarketEventContract(unittest.TestCase):
     def test_minimal_event_without_context(self):
         """MarketEvent without technical_context or news_context is handled."""
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="MIN.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -279,6 +281,7 @@ class TestDecisionEngineDecidePipeline(unittest.TestCase):
         """Create a minimal MarketEvent with a specific quality_level."""
         from data.models.event_enums import PriorityLevel
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="TEST.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,

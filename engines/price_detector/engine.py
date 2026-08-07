@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from config.price_detector import DEFAULT_CONFIG, PriceDetectorConfig
+from config.signal_timing import lookup_signal_timing
 from data.models.event_enums import EventFamily, EventOwner, InstrumentType, PriorityLevel
 from data.models.market_data import MarketData
 from data.models.market_event import MarketEvent
@@ -155,6 +156,7 @@ class PriceDetector:
             ticker=ticker,
             market=market,
             instrument_type=instrument_type,
+            event_type=detection.event_type,
         )
 
         event.set_detection(

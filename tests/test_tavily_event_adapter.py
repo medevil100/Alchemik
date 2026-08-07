@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from data.models.event_enums import EventFamily, EventOwner, InstrumentType, PriorityLevel
+from data.models.event_enums import EventFamily, EventOwner, InstrumentType, PriorityLevel, SignalTiming
 from data.models.market_event import MarketEvent
 from data.tavily.config import TavilyConfig
 from data.tavily.errors import (
@@ -74,6 +74,7 @@ def _make_market_event(**overrides) -> MarketEvent:
         event_family=EventFamily.TECHNICAL,
         event_category="Cenowe",
         event_type="PRICE_SURGE",
+        signal_timing=SignalTiming.LEADING,
     )
     defaults.update(overrides)
     return MarketEvent(**defaults)

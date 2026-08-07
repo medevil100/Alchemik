@@ -258,13 +258,15 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
         self.assertEqual(len(no_events), 0)
 
     def test_get_market_event_by_id(self):
-        """Test retrieving a single MarketEvent by event_id."""
+        """Test retrieving a single MarketEvent by event_id — returns MarketEvent object."""
         event = self._make_sample_market_event("TICK_X", "EVENT_ID_TEST")
         self.repo.save_market_event(self.cycle_id, event.to_dict())
 
         retrieved = self.repo.get_market_event_by_id(event.event_id)
         self.assertIsNotNone(retrieved)
-        self.assertEqual(retrieved["event_id"], event.event_id)
+        self.assertEqual(retrieved.event_id, event.event_id)
+        self.assertEqual(retrieved.ticker, event.ticker)
+        self.assertEqual(retrieved.event_type, event.event_type)
 
     def test_get_market_event_by_id_not_found(self):
         """Test that get_market_event_by_id returns None for non-existent ID."""

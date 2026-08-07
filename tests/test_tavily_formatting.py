@@ -327,6 +327,7 @@ class TestFormatTavilyContext(unittest.TestCase):
         from data.models.price_data import PriceData
 
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="TEST.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -369,6 +370,7 @@ class TestFormatTavilyContext(unittest.TestCase):
         from data.models.price_data import PriceData
 
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="TEST.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -402,6 +404,7 @@ class TestFormatTavilyContext(unittest.TestCase):
         from data.models.price_data import PriceData
 
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="TEST.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,
@@ -435,6 +438,7 @@ class TestFormatTavilyContext(unittest.TestCase):
         from data.models.price_data import PriceData
 
         event = MarketEvent.create_new(
+            event_type="PRICE_SURGE",
             ticker="TEST.WA",
             market="GPW",
             instrument_type=InstrumentType.STOCK_GPW,

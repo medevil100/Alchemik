@@ -2,13 +2,13 @@
 Integration test: DetectorOrchestrator → MasterEngine → MarketEvent.
 
 Verifies the complete FAZA 2 ETAPU 6 pipeline using unittest.
+All internal engines are real instances. No internal mocks.
 """
 
 from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
 
 from data.models.event_enums import EventFamily, InstrumentType, PriorityLevel
 from data.models.market_data import MarketData
@@ -32,9 +32,31 @@ from engines.detectors import (
     SentimentNewsEventDetector,
     SystemEventDetector,
 )
+from engines.technical import TechnicalEngine
+from engines.news import NewsPipeline
+from engines.ai import DecisionEngine
+from engines.ranking import RankingEngine
+from engines.risk import RiskEngine
+from engines.hunter import HunterEngine
+from engines.analyst import AnalystEngine
+from engines.price_detector import PriceDetector
+from engines.volume_detector import VolumeDetector
 
 
-def _make_ohlcv(ticks: int = 5) -> list[MarketData]:
+HUNTER_CONFIG = {
+    "ranking_weight": 0.4,
+    "risk_weight": 0.3,
+    "confidence_weight": 0.3,
+    "min_ranking_score": 0.0,
+    "max_risk_score": 1.0,
+    "min_confidence": 0.0,
+    "max_results": 100,
+    "priority_thresholds": [0.9, 0.7, 0.5],
+}
+
+
+def _make_ohlcv(ticks: int = 60) -> list[MarketData]:
+    """Build enough data points to satisfy all indicator windows."""
     now = datetime.now()
     base = 100.0
     data = []
@@ -53,30 +75,18 @@ def _make_ohlcv(ticks: int = 5) -> list[MarketData]:
     return data
 
 
-def _make_mock_engine() -> MasterEngine:
-    """Build a MasterEngine with mocked downstream engines for testing."""
-    mock_tech = MagicMock()
-    mock_news = MagicMock()
-    mock_ai = MagicMock()
-    mock_ranking = MagicMock()
-    mock_risk = MagicMock()
-    mock_hunter = MagicMock()
-    mock_analyst = MagicMock()
-    mock_price = MagicMock()
-    mock_price.detect.return_value = []
-    mock_vol = MagicMock()
-    mock_vol.detect.return_value = []
-
+def _make_real_engine() -> MasterEngine:
+    """Build a MasterEngine with real internal engine instances."""
     return MasterEngine(
-        technical_engine=mock_tech,
-        news_engine=mock_news,
-        ai_engine=mock_ai,
-        ranking_engine=mock_ranking,
-        risk_engine=mock_risk,
-        hunter_engine=mock_hunter,
-        analyst_engine=mock_analyst,
-        price_detector=mock_price,
-        volume_detector=mock_vol,
+        technical_engine=TechnicalEngine(),
+        news_engine=NewsPipeline(filter_config=None),
+        ai_engine=DecisionEngine(),
+        ranking_engine=RankingEngine(),
+        risk_engine=RiskEngine(),
+        hunter_engine=HunterEngine(HUNTER_CONFIG),
+        analyst_engine=AnalystEngine(),
+        price_detector=PriceDetector(),
+        volume_detector=VolumeDetector(),
     )
 
 
@@ -131,7 +141,7 @@ class TestResultToMarketEvent(unittest.TestCase):
 
     def test_clamp_is_applied_by_converter(self):
         """Verify _result_to_market_event clamps confidence via max(0.0, min(1.0, ...)).
-        
+
         DetectionResult rejects out-of-range values in __post_init__,
         but the converter has a safety clamp. We test boundary values.
         """
@@ -166,14 +176,12 @@ class TestMasterEnginePipeline(unittest.TestCase):
         self.assertEqual(expected_ids, actual_ids)
 
     def test_run_detectors_with_ohlcv(self):
-        engine = _make_mock_engine()
-        ohlcv = _make_ohlcv(30)
+        engine = _make_real_engine()
+        ohlcv = _make_ohlcv(60)
         events = engine.run_detectors(
             ticker="TEST.WA", market="GPW",
             instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv,
         )
-        # BaseDetector path (TechnicalEventDetector) may produce events
-        # Even if none, the call must not raise
         for ev in events:
             self.assertTrue(ev.event_id)
             self.assertEqual(ev.ticker, "TEST.WA")
@@ -186,7 +194,7 @@ class TestMasterEnginePipeline(unittest.TestCase):
             self.assertTrue(ev.schema_version)
 
     def test_empty_ohlcv_returns_empty(self):
-        engine = _make_mock_engine()
+        engine = _make_real_engine()
         events = engine.run_detectors(
             ticker="TEST.WA", market="GPW",
             instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=[],
@@ -194,8 +202,8 @@ class TestMasterEnginePipeline(unittest.TestCase):
         self.assertEqual(events, [])
 
     def test_base_detectors_produce_events(self):
-        engine = _make_mock_engine()
-        ohlcv = _make_ohlcv(30)
+        engine = _make_real_engine()
+        ohlcv = _make_ohlcv(60)
         base_events = engine._run_base_detectors(
             ticker="TEST.WA", market="GPW",
             instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv,
@@ -206,10 +214,8 @@ class TestMasterEnginePipeline(unittest.TestCase):
 
     def test_frozen_detectors_still_work(self):
         """PriceDetector and VolumeDetector must still produce events."""
-        engine = _make_mock_engine()
-        engine.price_detector.detect.return_value = []
-        engine.volume_detector.detect.return_value = []
-        ohlcv = _make_ohlcv(5)
+        engine = _make_real_engine()
+        ohlcv = _make_ohlcv(60)
         price_events = engine.price_detector.detect(
             ticker="T", market="M", instrument_type=InstrumentType.STOCK_GPW, ohlcv_data=ohlcv,
         )

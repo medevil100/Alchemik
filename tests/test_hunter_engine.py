@@ -2,9 +2,11 @@
 Tests for the Hunter Engine.
 """
 import unittest
+from dataclasses import is_dataclass
 from datetime import datetime
 from engines.hunter.engine import HunterEngine
 from data.models.hunter_result import HunterResult, HunterScanResult
+
 
 class TestHunterEngine(unittest.TestCase):
     """
@@ -27,6 +29,10 @@ class TestHunterEngine(unittest.TestCase):
             "handle_ties": "priority"
         }
         self.hunter = HunterEngine(self.config)
+
+    # ------------------------------------------------------------------
+    # Existing behaviour tests (untouched)
+    # ------------------------------------------------------------------
 
     def test_filtering(self):
         """
@@ -81,6 +87,80 @@ class TestHunterEngine(unittest.TestCase):
         self.config["max_results"] = 2
         result = self.hunter.scan(instruments)
         self.assertEqual(len(result.opportunities), 2)
+
+    # ------------------------------------------------------------------
+    # Explicit contract / compatibility tests
+    # ------------------------------------------------------------------
+
+    def test_scan_returns_real_hunter_scan_result(self):
+        """
+        HunterEngine.scan() returns a real HunterScanResult dataclass instance.
+        """
+        result = self.hunter.scan([
+            {"instrument_id": "A", "ranking_score": 0.6,
+             "risk_score": 0.6, "confidence": 0.7}
+        ])
+        self.assertIsInstance(result, HunterScanResult)
+        self.assertTrue(is_dataclass(result))
+        self.assertFalse(hasattr(result, '__module__') and 'mock' in repr(type(result)).lower())
+
+    def test_opportunities_contain_only_hunter_result(self):
+        """
+        Every element in HunterScanResult.opportunities is a real
+        HunterResult dataclass instance.
+        """
+        instruments = [
+            {"instrument_id": "A", "ranking_score": 0.6, "risk_score": 0.6, "confidence": 0.7},
+            {"instrument_id": "B", "ranking_score": 0.7, "risk_score": 0.5, "confidence": 0.8},
+        ]
+        result = self.hunter.scan(instruments)
+        self.assertGreaterEqual(len(result.opportunities), 1)
+        for opp in result.opportunities:
+            self.assertIsInstance(opp, HunterResult)
+            self.assertTrue(is_dataclass(opp))
+
+    def test_hunter_result_has_all_required_fields(self):
+        """
+        HunterResult exposes all fields required by RuntimeService
+        (instrument_id, hunter_score, priority).
+        """
+        instrument = {"instrument_id": "X", "ranking_score": 0.8, "risk_score": 0.3, "confidence": 0.9}
+        hr = self.hunter._calculate_hunter_score(instrument)
+        self.assertEqual(hr.instrument_id, "X")
+        self.assertIsInstance(hr.hunter_score, float)
+        self.assertIsInstance(hr.priority, int)
+        self.assertTrue(0.0 <= hr.hunter_score <= 1.0)
+
+    def test_missing_field_raises_type_error(self):
+        """
+        Attempting to access a non-existent field on a real HunterResult
+        must raise AttributeError (no loose mock silently accepting it).
+        """
+        hr = HunterResult(
+            instrument_id="T", hunter_score=0.5, priority=2,
+            ranking_score=0.6, risk_score=0.4, risk_level="low",
+            confidence=0.6, reasons=[], warnings=[], timestamp=datetime.now(),
+        )
+        with self.assertRaises(AttributeError):
+            _ = hr.non_existent_field  # must raise — real dataclass
+
+    def test_hunter_scan_result_has_scalar_stats(self):
+        """
+        HunterScanResult provides int stats (analyzed, rejected, qualified)
+        that are usable without any adapter.
+        """
+        instruments = [
+            {"instrument_id": "A", "ranking_score": 0.6, "risk_score": 0.6, "confidence": 0.7},
+            {"instrument_id": "B", "ranking_score": 0.1, "risk_score": 0.9, "confidence": 0.3},
+        ]
+        result = self.hunter.scan(instruments)
+        self.assertIsInstance(result.analyzed, int)
+        self.assertIsInstance(result.rejected, int)
+        self.assertIsInstance(result.qualified, int)
+        self.assertGreaterEqual(result.analyzed, 0)
+        self.assertGreaterEqual(result.rejected, 0)
+        self.assertGreaterEqual(result.qualified, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

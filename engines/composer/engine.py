@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from typing import Dict, FrozenSet, List, Set, Tuple
 
 from config.composer import get_composer_config, ComposerConfig
+from config.signal_timing import lookup_signal_timing
 from data.models.composite_event import CompositeEvent
 from data.models.event_enums import (
     EventFamily,
@@ -495,6 +496,7 @@ class ComposerEngine:
             ticker=composite.ticker,
             market=first.market,
             instrument_type=first.instrument_type,
+            event_type=composite.event_type,
             timestamp_utc=composite.timestamp_utc,
         )
 
@@ -507,6 +509,7 @@ class ComposerEngine:
             detection_source="ComposerEngine",
             event_owner=EventOwner.Multi_Engine,
         )
+
         # N2: detection_source must be empty for Composite Events
         market_event.detection_source = ""
 
