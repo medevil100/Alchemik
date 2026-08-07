@@ -266,7 +266,16 @@ class RuntimeReadService:
         try:
             event = self._repo.get_market_event_by_id(event_id)
             if event:
-                return _strip_internal_fields(event)
+                # get_market_event_by_id() returns a MarketEvent object
+                # (KROK 3E — OutcomeRepository contract).
+                # Convert to dict for API compatibility.
+                if hasattr(event, "to_dict"):
+                    event_dict = event.to_dict()
+                elif hasattr(event, "items"):
+                    event_dict = event
+                else:
+                    event_dict = event.__dict__
+                return _strip_internal_fields(event_dict)
             return None
         except Exception as e:
             logger.error("Failed to get market event %s: %s", event_id, str(e))

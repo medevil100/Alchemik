@@ -82,6 +82,59 @@ class SQLiteHistoryRepository:
         CREATE INDEX IF NOT EXISTS idx_market_events_ticker ON market_events(ticker);
         CREATE INDEX IF NOT EXISTS idx_market_events_created ON market_events(created_at);
         CREATE INDEX IF NOT EXISTS idx_market_events_event_id ON market_events(event_id);
+
+        CREATE TABLE IF NOT EXISTS event_outcomes (
+            event_outcome_id TEXT PRIMARY KEY,
+            market_event_id TEXT NOT NULL UNIQUE,
+            state TEXT NOT NULL DEFAULT 'PENDING',
+            ticker TEXT NOT NULL,
+            market TEXT NOT NULL DEFAULT '',
+            detection_timestamp TEXT NOT NULL,
+            base_price REAL,
+            base_volume REAL,
+            event_family TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            quality_level TEXT NOT NULL DEFAULT '',
+            expected_horizons INTEGER NOT NULL DEFAULT 4,
+            horizons_calculated INTEGER NOT NULL DEFAULT 0,
+            horizons_failed INTEGER NOT NULL DEFAULT 0,
+            horizons_skipped INTEGER NOT NULL DEFAULT 0,
+            missing_horizons_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            rule_version TEXT NOT NULL DEFAULT '1.0.0',
+            failure_reason TEXT,
+            invalid_reason TEXT,
+            FOREIGN KEY (market_event_id) REFERENCES market_events(event_id) ON DELETE RESTRICT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_event_outcomes_market_event_id ON event_outcomes(market_event_id);
+        CREATE INDEX IF NOT EXISTS idx_event_outcomes_state ON event_outcomes(state);
+        CREATE INDEX IF NOT EXISTS idx_event_outcomes_ticker ON event_outcomes(ticker);
+
+        CREATE TABLE IF NOT EXISTS session_outcomes (
+            session_outcome_id TEXT PRIMARY KEY,
+            event_outcome_id TEXT NOT NULL,
+            horizon_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'PENDING',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            close_price REAL,
+            price_change_pct REAL,
+            price_change_abs REAL,
+            volume REAL,
+            volume_change_pct REAL,
+            high_price REAL,
+            low_price REAL,
+            failure_reason TEXT,
+            skip_reason TEXT,
+            computed_at TEXT,
+            rule_version TEXT,
+            data_source TEXT,
+            FOREIGN KEY (event_outcome_id) REFERENCES event_outcomes(event_outcome_id) ON DELETE RESTRICT,
+            UNIQUE(event_outcome_id, horizon_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_outcomes_event_outcome_id ON session_outcomes(event_outcome_id);
+        CREATE INDEX IF NOT EXISTS idx_session_outcomes_state ON session_outcomes(state);
     """
 
     SQL_WAL_PRAGMAS = """
@@ -1051,6 +1104,494 @@ class SQLiteHistoryRepository:
                 {"priority": row[0], "count": row[1]}
                 for row in cursor.fetchall()
             ]
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # OutcomeRepository contract methods (KROK 3E)
+    # ------------------------------------------------------------------
+
+    def get_all_market_event_ids(self) -> set[str]:
+        """Return all MarketEvent.event_id values stored in the database."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT event_id FROM market_events")
+            return {row[0] for row in cursor.fetchall()}
+        finally:
+            conn.close()
+
+    def get_market_event_by_id(self, event_id: str):
+        """
+        Return a real MarketEvent object for the given event_id, or None.
+
+        Reconstructs the MarketEvent from its JSON representation stored
+        in the database. Uses MarketEvent.from_dict() if available,
+        otherwise returns the raw dict (for duck-typing compatibility
+        with OutcomeComputer which accesses attributes like .ticker,
+        .market, .timestamp_utc, .price_data, .volume_data, etc.).
+
+        Returns:
+            MarketEvent object if found, None otherwise.
+        """
+        from data.models.market_event import MarketEvent
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT event_json FROM market_events
+                WHERE event_id = ?
+                LIMIT 1
+                """,
+                (event_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                event_dict = json.loads(row[0])
+                # Reconstruct MarketEvent from dict
+                if hasattr(MarketEvent, "from_dict"):
+                    return MarketEvent.from_dict(event_dict)
+                else:
+                    # Fallback: construct directly from fields
+                    from data.models.event_enums import EventFamily, EventOwner, InstrumentType, PriorityLevel
+                    from data.models.price_data import PriceData
+                    from data.models.volume_data import VolumeData
+                    ts = event_dict.get("timestamp_utc")
+                    if ts:
+                        ts = datetime.fromisoformat(ts)
+                    else:
+                        ts = datetime.now(timezone.utc)
+
+                    instrument_type = event_dict.get("instrument_type", "STOCK_GPW")
+                    if isinstance(instrument_type, str):
+                        try:
+                            instrument_type = InstrumentType(instrument_type)
+                        except (ValueError, TypeError):
+                            instrument_type = InstrumentType.STOCK_GPW
+
+                    event_family = event_dict.get("event_family", "TECHNICAL")
+                    if isinstance(event_family, str):
+                        try:
+                            event_family = EventFamily(event_family)
+                        except (ValueError, TypeError):
+                            event_family = EventFamily.TECHNICAL
+
+                    priority_raw = event_dict.get("priority_raw", "MEDIUM")
+                    if isinstance(priority_raw, str):
+                        try:
+                            priority_raw = PriorityLevel(priority_raw)
+                        except (ValueError, TypeError):
+                            priority_raw = PriorityLevel.MEDIUM
+
+                    price_data = None
+                    pd_dict = event_dict.get("price_data")
+                    if pd_dict and isinstance(pd_dict, dict):
+                        price_data = PriceData(
+                            open=pd_dict.get("open", 0.0),
+                            high=pd_dict.get("high", 0.0),
+                            low=pd_dict.get("low", 0.0),
+                            close=pd_dict.get("close", 0.0),
+                            prev_close=pd_dict.get("prev_close", 0.0),
+                            change_pct=pd_dict.get("change_pct", 0.0),
+                            change_abs=pd_dict.get("change_abs", 0.0),
+                        )
+
+                    volume_data = None
+                    vd_dict = event_dict.get("volume_data")
+                    if vd_dict and isinstance(vd_dict, dict):
+                        volume_data = VolumeData(
+                            current_volume=vd_dict.get("current_volume", 0.0),
+                            avg_volume=vd_dict.get("avg_volume", 0.0),
+                            volume_ratio=vd_dict.get("volume_ratio", 1.0),
+                            direction=vd_dict.get("direction", ""),
+                        )
+
+                    event = MarketEvent(
+                        event_id=event_dict.get("event_id", event_id),
+                        timestamp_utc=ts,
+                        ticker=event_dict.get("ticker", ""),
+                        market=event_dict.get("market", ""),
+                        instrument_type=instrument_type,
+                        event_family=event_family,
+                        event_category=event_dict.get("event_category", ""),
+                        event_type=event_dict.get("event_type", ""),
+                        priority_raw=priority_raw,
+                        confidence_level=event_dict.get("confidence_level", 0.0),
+                        detection_source=event_dict.get("detection_source", ""),
+                        event_owner=EventOwner.TechnicalEngine,
+                        price_data=price_data,
+                        volume_data=volume_data,
+                    )
+                    # Restore quality_level if present
+                    ql = event_dict.get("quality_level")
+                    if ql:
+                        try:
+                            event.quality_level = PriorityLevel(ql) if isinstance(ql, str) else ql
+                        except (ValueError, TypeError):
+                            pass
+                    return event
+            return None
+        finally:
+            conn.close()
+
+    def get_all_event_outcome_ids(self) -> set[str]:
+        """Return all market_event_id values that already have an EventOutcome."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT market_event_id FROM event_outcomes")
+            return {row[0] for row in cursor.fetchall()}
+        finally:
+            conn.close()
+
+    def save_event_outcome(self, event_outcome) -> None:
+        """
+        Save or update an EventOutcome object to the database.
+
+        Args:
+            event_outcome: EventOutcome dataclass instance.
+        """
+        import json
+        from datetime import datetime
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO event_outcomes (
+                    event_outcome_id, market_event_id, state, ticker, market,
+                    detection_timestamp, base_price, base_volume,
+                    event_family, event_type, quality_level,
+                    expected_horizons, horizons_calculated, horizons_failed,
+                    horizons_skipped, missing_horizons_json, created_at,
+                    rule_version, failure_reason, invalid_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_outcome.event_outcome_id,
+                    event_outcome.market_event_id,
+                    event_outcome.state.value if hasattr(event_outcome.state, "value") else str(event_outcome.state),
+                    event_outcome.ticker,
+                    event_outcome.market,
+                    event_outcome.detection_timestamp.isoformat() if hasattr(event_outcome.detection_timestamp, "isoformat") else str(event_outcome.detection_timestamp),
+                    event_outcome.base_price,
+                    event_outcome.base_volume,
+                    event_outcome.event_family,
+                    event_outcome.event_type,
+                    event_outcome.quality_level,
+                    event_outcome.expected_horizons,
+                    event_outcome.horizons_calculated,
+                    event_outcome.horizons_failed,
+                    event_outcome.horizons_skipped,
+                    json.dumps(event_outcome.missing_horizons),
+                    event_outcome.created_at.isoformat() if hasattr(event_outcome.created_at, "isoformat") else str(event_outcome.created_at),
+                    event_outcome.rule_version,
+                    event_outcome.failure_reason,
+                    event_outcome.invalid_reason,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_event_outcome_by_id(self, event_outcome_id: str):
+        """
+        Retrieve an EventOutcome by its own ID.
+
+        Returns:
+            EventOutcome object if found, None otherwise.
+        """
+        from data.models.event_outcome import EventOutcome, EventOutcomeState
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT event_outcome_id, market_event_id, state, ticker, market,
+                   detection_timestamp, base_price, base_volume,
+                   event_family, event_type, quality_level,
+                   expected_horizons, horizons_calculated, horizons_failed,
+                   horizons_skipped, missing_horizons_json, created_at,
+                   rule_version, failure_reason, invalid_reason
+                   FROM event_outcomes WHERE event_outcome_id = ?""",
+                (event_outcome_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return EventOutcome(
+                    event_outcome_id=row[0],
+                    market_event_id=row[1],
+                    state=EventOutcomeState(row[2]) if row[2] else EventOutcomeState.PENDING,
+                    ticker=row[3],
+                    market=row[4],
+                    detection_timestamp=datetime.fromisoformat(row[5]),
+                    base_price=row[6],
+                    base_volume=row[7],
+                    event_family=row[8],
+                    event_type=row[9],
+                    quality_level=row[10],
+                    expected_horizons=row[11],
+                    horizons_calculated=row[12],
+                    horizons_failed=row[13],
+                    horizons_skipped=row[14],
+                    missing_horizons=json.loads(row[15]) if row[15] else [],
+                    created_at=datetime.fromisoformat(row[16]),
+                    rule_version=row[17],
+                    failure_reason=row[18],
+                    invalid_reason=row[19],
+                )
+            return None
+        finally:
+            conn.close()
+
+    def get_event_outcome_by_market_event_id(self, market_event_id: str):
+        """
+        Retrieve an EventOutcome by its source MarketEvent ID.
+
+        Returns:
+            EventOutcome object if found, None otherwise.
+        """
+        from data.models.event_outcome import EventOutcome, EventOutcomeState
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT event_outcome_id, market_event_id, state, ticker, market,
+                   detection_timestamp, base_price, base_volume,
+                   event_family, event_type, quality_level,
+                   expected_horizons, horizons_calculated, horizons_failed,
+                   horizons_skipped, missing_horizons_json, created_at,
+                   rule_version, failure_reason, invalid_reason
+                   FROM event_outcomes WHERE market_event_id = ?""",
+                (market_event_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return EventOutcome(
+                    event_outcome_id=row[0],
+                    market_event_id=row[1],
+                    state=EventOutcomeState(row[2]) if row[2] else EventOutcomeState.PENDING,
+                    ticker=row[3],
+                    market=row[4],
+                    detection_timestamp=datetime.fromisoformat(row[5]),
+                    base_price=row[6],
+                    base_volume=row[7],
+                    event_family=row[8],
+                    event_type=row[9],
+                    quality_level=row[10],
+                    expected_horizons=row[11],
+                    horizons_calculated=row[12],
+                    horizons_failed=row[13],
+                    horizons_skipped=row[14],
+                    missing_horizons=json.loads(row[15]) if row[15] else [],
+                    created_at=datetime.fromisoformat(row[16]),
+                    rule_version=row[17],
+                    failure_reason=row[18],
+                    invalid_reason=row[19],
+                )
+            return None
+        finally:
+            conn.close()
+
+    def get_pending_session_outcomes(self) -> list:
+        """
+        Return all SessionOutcome objects in PENDING state.
+
+        Returns:
+            List of SessionOutcome dataclass instances.
+        """
+        from data.models.session_outcome import SessionOutcome, SessionOutcomeState
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT session_outcome_id, event_outcome_id, horizon_id,
+                   state, attempt_count,
+                   close_price, price_change_pct, price_change_abs,
+                   volume, volume_change_pct,
+                   high_price, low_price,
+                   failure_reason, skip_reason,
+                   computed_at, rule_version, data_source
+                   FROM session_outcomes WHERE state = 'PENDING'"""
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append(SessionOutcome(
+                    session_outcome_id=row[0],
+                    event_outcome_id=row[1],
+                    horizon_id=row[2],
+                    state=SessionOutcomeState(row[3]) if row[3] else SessionOutcomeState.PENDING,
+                    attempt_count=row[4],
+                    close_price=row[5],
+                    price_change_pct=row[6],
+                    price_change_abs=row[7],
+                    volume=row[8],
+                    volume_change_pct=row[9],
+                    high_price=row[10],
+                    low_price=row[11],
+                    failure_reason=row[12],
+                    skip_reason=row[13],
+                    computed_at=datetime.fromisoformat(row[14]) if row[14] else None,
+                    rule_version=row[15],
+                    data_source=row[16],
+                ))
+            return results
+        finally:
+            conn.close()
+
+    def get_session_outcomes_for_event(self, event_outcome_id: str) -> list:
+        """
+        Return all SessionOutcome objects for a given EventOutcome.
+
+        Args:
+            event_outcome_id: The EventOutcome ID.
+
+        Returns:
+            List of SessionOutcome dataclass instances.
+        """
+        from data.models.session_outcome import SessionOutcome, SessionOutcomeState
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT session_outcome_id, event_outcome_id, horizon_id,
+                   state, attempt_count,
+                   close_price, price_change_pct, price_change_abs,
+                   volume, volume_change_pct,
+                   high_price, low_price,
+                   failure_reason, skip_reason,
+                   computed_at, rule_version, data_source
+                   FROM session_outcomes WHERE event_outcome_id = ?""",
+                (event_outcome_id,),
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append(SessionOutcome(
+                    session_outcome_id=row[0],
+                    event_outcome_id=row[1],
+                    horizon_id=row[2],
+                    state=SessionOutcomeState(row[3]) if row[3] else SessionOutcomeState.PENDING,
+                    attempt_count=row[4],
+                    close_price=row[5],
+                    price_change_pct=row[6],
+                    price_change_abs=row[7],
+                    volume=row[8],
+                    volume_change_pct=row[9],
+                    high_price=row[10],
+                    low_price=row[11],
+                    failure_reason=row[12],
+                    skip_reason=row[13],
+                    computed_at=datetime.fromisoformat(row[14]) if row[14] else None,
+                    rule_version=row[15],
+                    data_source=row[16],
+                ))
+            return results
+        finally:
+            conn.close()
+
+    def save_session_outcome(self, session) -> None:
+        """
+        Save or update a SessionOutcome object to the database.
+
+        Args:
+            session: SessionOutcome dataclass instance.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO session_outcomes (
+                    session_outcome_id, event_outcome_id, horizon_id,
+                    state, attempt_count,
+                    close_price, price_change_pct, price_change_abs,
+                    volume, volume_change_pct,
+                    high_price, low_price,
+                    failure_reason, skip_reason,
+                    computed_at, rule_version, data_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.session_outcome_id,
+                    session.event_outcome_id,
+                    session.horizon_id,
+                    session.state.value if hasattr(session.state, "value") else str(session.state),
+                    session.attempt_count,
+                    session.close_price,
+                    session.price_change_pct,
+                    session.price_change_abs,
+                    session.volume,
+                    session.volume_change_pct,
+                    session.high_price,
+                    session.low_price,
+                    session.failure_reason,
+                    session.skip_reason,
+                    session.computed_at.isoformat() if session.computed_at and hasattr(session.computed_at, "isoformat") else str(session.computed_at) if session.computed_at else None,
+                    session.rule_version,
+                    session.data_source,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_event_outcomes_by_state(self, state) -> list:
+        """
+        Return all EventOutcome objects in the given state.
+
+        Args:
+            state: EventOutcomeState enum value.
+
+        Returns:
+            List of EventOutcome dataclass instances.
+        """
+        from data.models.event_outcome import EventOutcome, EventOutcomeState
+
+        state_str = state.value if hasattr(state, "value") else str(state)
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT event_outcome_id, market_event_id, state, ticker, market,
+                   detection_timestamp, base_price, base_volume,
+                   event_family, event_type, quality_level,
+                   expected_horizons, horizons_calculated, horizons_failed,
+                   horizons_skipped, missing_horizons_json, created_at,
+                   rule_version, failure_reason, invalid_reason
+                   FROM event_outcomes WHERE state = ?""",
+                (state_str,),
+            )
+            results = []
+            for row in cursor.fetchall():
+                results.append(EventOutcome(
+                    event_outcome_id=row[0],
+                    market_event_id=row[1],
+                    state=EventOutcomeState(row[2]) if row[2] else EventOutcomeState.PENDING,
+                    ticker=row[3],
+                    market=row[4],
+                    detection_timestamp=datetime.fromisoformat(row[5]),
+                    base_price=row[6],
+                    base_volume=row[7],
+                    event_family=row[8],
+                    event_type=row[9],
+                    quality_level=row[10],
+                    expected_horizons=row[11],
+                    horizons_calculated=row[12],
+                    horizons_failed=row[13],
+                    horizons_skipped=row[14],
+                    missing_horizons=json.loads(row[15]) if row[15] else [],
+                    created_at=datetime.fromisoformat(row[16]),
+                    rule_version=row[17],
+                    failure_reason=row[18],
+                    invalid_reason=row[19],
+                ))
+            return results
         finally:
             conn.close()
 

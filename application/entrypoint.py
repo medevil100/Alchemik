@@ -41,6 +41,10 @@ from engines.ranking.engine import RankingEngine
 from engines.risk.engine import RiskEngine
 from engines.analyst.engine import AnalystEngine
 
+from engines.outcome.engine import OutcomeComputer
+from engines.outcome.calendar import TradingCalendar
+from config.outcome import OutcomeConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +108,14 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
         analyst_engine=analyst_engine,
     )
 
+    # --- Outcome Computer ---
+    outcome_computer = OutcomeComputer(
+        repository=history_repository,
+        yahoo_fetcher=yahoo_fetcher,
+        calendar=TradingCalendar(),
+        config=OutcomeConfig(),
+    )
+
     runtime = RuntimeService(
         hunter_engine=hunter_engine,
         master_engine=master_engine,
@@ -112,6 +124,7 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
         deduplicator=deduplicator,
         alert_builder=alert_builder,
         alert_dispatcher=alert_dispatcher,
+        outcome_computer=outcome_computer,
     )
 
     return runtime

@@ -20,7 +20,8 @@ class RuntimeService:
                  alert_builder=None,
                  alert_dispatcher=None,
                  telegram_channel=None,
-                 instrument_metadata: Optional[Dict[str, Tuple[str, InstrumentType]]] = None):
+                 instrument_metadata: Optional[Dict[str, Tuple[str, InstrumentType]]] = None,
+                 outcome_computer=None):
         self.hunter_engine = hunter_engine
         self.master_engine = master_engine
         self.history_repository = history_repository
@@ -30,6 +31,7 @@ class RuntimeService:
         self.alert_dispatcher = alert_dispatcher
         self.telegram_channel = telegram_channel
         self._instrument_metadata = instrument_metadata
+        self.outcome_computer = outcome_computer
 
     def _get_instrument_metadata(self, ticker: str) -> Tuple[str, InstrumentType]:
         """
@@ -255,6 +257,42 @@ class RuntimeService:
                 report.errors.append(CandidateError(
                     candidate_id=cycle_id,
                     stage="MarketEvent Storage",
+                    message=str(e),
+                ))
+
+        # Outcome: initialize new events (best-effort, after MarketEvent persistence)
+        if self.outcome_computer is not None:
+            try:
+                new_outcomes = self.outcome_computer.initialize_new_events()
+                if new_outcomes:
+                    logger.info(
+                        "OutcomeComputer: %d new EventOutcome(s) initialized",
+                        len(new_outcomes),
+                    )
+            except Exception as e:
+                logger.error("OutcomeComputer.initialize_new_events() failed: %s", e, exc_info=True)
+                report.error_count += 1
+                report.errors.append(CandidateError(
+                    candidate_id=cycle_id,
+                    stage="OutcomeComputer.initialize_new_events",
+                    message=str(e),
+                ))
+
+        # Outcome: compute pending horizons (best-effort, independent of initialization)
+        if self.outcome_computer is not None:
+            try:
+                updated = self.outcome_computer.compute_pending_horizons()
+                if updated > 0:
+                    logger.info(
+                        "OutcomeComputer: %d SessionOutcome(s) updated",
+                        updated,
+                    )
+            except Exception as e:
+                logger.error("OutcomeComputer.compute_pending_horizons() failed: %s", e, exc_info=True)
+                report.error_count += 1
+                report.errors.append(CandidateError(
+                    candidate_id=cycle_id,
+                    stage="OutcomeComputer.compute_pending_horizons",
                     message=str(e),
                 ))
             
