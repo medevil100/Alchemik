@@ -4,10 +4,10 @@
 
 | Atrybut | Wartość |
 |---------|---------|
-| Data | 27.07.2026 |
-| Wersja | 1.1 |
-| Status | **AKTUALNY — zgodny z kodem (ETAP 7.4)** |
-| Bazuje na | rzeczywistym stanie repozytorium (commit `6670061`, stan roboczy ETAPU 7.4) |
+| Data | 03.08.2026 |
+| Wersja | 1.2 |
+| Status | **AKTUALNY — zgodny z kodem (ETAP 7.5b)** |
+| Bazuje na | rzeczywistym stanie repozytorium (commit `0e9b6b8`, stan roboczy ETAPU 7.5b) |
 
 ---
 
@@ -30,6 +30,301 @@ Kluczowe założenia:
 - **Analiza łączna** — cena i wolumen analizowane razem, z uwzględnieniem kontekstu
 - **AI jako narzędzie** — AI interpretuje dane, nie podejmuje decyzji
 - **Rola inwestora** — ostateczna decyzja należy do człowieka
+
+### Wykrywanie narodzin okazji
+
+ALCHEMIK nie został zaprojektowany do wyszukiwania instrumentów po wykonaniu dużego ruchu cenowego.
+
+Celem systemu jest wykrywanie narodzin okazji inwestycyjnej możliwie najwcześniej, gdy pojawiają się pierwsze oznaki nietypowej aktywności rynkowej.
+
+Typowe sygnały obejmują między innymi:
+
+- pierwsze dynamiczne przyspieszenie ceny,
+- ponadprzeciętny wolumen,
+- pojawienie się nietypowej aktywności rynku,
+- jednoczesne wystąpienie wielu zdarzeń technicznych.
+
+Rolą systemu jest możliwie szybkie wykrycie takiej sytuacji oraz przekazanie pełnego obrazu dalszym etapom analizy.
+
+AI analizuje instrument na początku rozwijającego się ruchu, a nie po zakończeniu wzrostu.
+
+### Filozofia selekcji zdarzeń i rola AI
+
+ALCHEMIK monitoruje cały rynek poprzez współpracujące silniki odpowiedzialne za analizę techniczną, analizę wolumenu, historię instrumentów oraz pozostałe źródła danych.
+
+Każdy silnik wnosi własną ocenę oraz własny kontekst. Celem wcześniejszych etapów pipeline'u nie jest podejmowanie decyzji inwestycyjnych, lecz możliwie szybkie wykrycie sytuacji odbiegających od normalnego zachowania instrumentu.
+
+Proces przebiega w następującej kolejności:
+
+1. Cała infrastruktura systemu monitoruje rynek.
+2. Silniki oraz detektory analizują dane bieżące oraz dane historyczne.
+3. System wykrywa, że w konkretnej spółce zaczyna dziać się coś nietypowego.
+4. QualityEngine oraz DecisionEngine kwalifikują znaczenie wykrytego zdarzenia.
+5. Dopiero wybrane zdarzenia kierowane są do pogłębionej analizy AI.
+
+Uruchamianie AI wyłącznie dla wybranych zdarzeń jest świadomą decyzją architektoniczną wynikającą z procesu selekcji prowadzonego przez wcześniejsze silniki.
+
+AI nie analizuje całego rynku.
+
+AI analizuje wyłącznie zdarzenia, które wcześniejsze etapy uznały za wymagające pogłębionej interpretacji.
+
+Historia instrumentu wykorzystywana przez wcześniejsze silniki ma umożliwić wykrycie początku rozwijającej się okazji inwestycyjnej, a nie jedynie potwierdzenie już zakończonych ruchów.
+
+### Zasada odpowiedzialności silników
+
+Każdy silnik ALCHEMIKA odpowiada wyłącznie za własny obszar analizy oraz za przygotowanie informacji potrzebnych kolejnym etapom pipeline'u.
+
+Rolą silnika jest:
+
+- wykrywanie zjawisk,
+- analiza własnego obszaru odpowiedzialności,
+- przygotowanie wyników,
+- przekazanie pełnej informacji kolejnym silnikom.
+
+Silnik nie powinien podejmować decyzji wykraczających poza własną odpowiedzialność.
+
+Żaden silnik nie może odrzucić potencjalnej okazji inwestycyjnej wyłącznie na podstawie własnej lokalnej oceny, jeżeli do podjęcia prawidłowej decyzji wymagany jest szerszy kontekst dostępny dopiero w kolejnych etapach pipeline'u.
+
+Ocena wykonywana przez pojedynczy silnik stanowi element procesu analitycznego, a nie końcową decyzję inwestycyjną.
+
+Końcowa ocena powstaje dopiero po połączeniu informacji pochodzących ze wszystkich etapów analizy.
+
+Jedynym wyjątkiem są sytuacje, w których:
+
+- dane naruszają kontrakt modeli,
+- dalsze przetwarzanie jest technicznie niemożliwe,
+- dokumentacja jednoznacznie nakazuje zakończenie przetwarzania.
+
+We wszystkich pozostałych przypadkach informacje powinny być przekazywane dalej, aby kolejne silniki mogły analizować instrument z pełniejszym kontekstem.
+
+### Zasada separacji odpowiedzialności
+
+Architektura ALCHEMIKA opiera się na ścisłym rozdzieleniu odpowiedzialności pomiędzy silnikami.
+
+Każdy silnik odpowiada wyłącznie za własny obszar analizy oraz własną logikę biznesową.
+
+Silnik powinien być możliwie samodzielny w swoim zakresie odpowiedzialności, ale nie może przejmować odpowiedzialności kolejnego etapu pipeline'u.
+
+Oznacza to między innymi, że:
+
+- TechnicalEngine odpowiada za analizę techniczną i wykrywanie zdarzeń technicznych.
+- QualityEngine odpowiada za ocenę jakości wykrytych zdarzeń.
+- DecisionEngine odpowiada za kwalifikację zdarzeń do dalszych etapów analizy.
+- RankingEngine odpowiada za ocenę pozycji instrumentu względem pozostałych instrumentów.
+- RiskEngine odpowiada za identyfikację, opis oraz kwantyfikację ryzyka.
+- HunterEngine odpowiada za agregację wyników wcześniejszych silników oraz identyfikację potencjalnych okazji.
+- AnalystEngine odpowiada za przygotowanie końcowej analizy.
+- AI interpretuje pełny kontekst przekazany przez wcześniejsze etapy pipeline'u.
+
+Żaden silnik nie powinien wykonywać zadań należących do innego silnika.
+
+Jeżeli podczas rozwoju projektu pojawi się potrzeba rozszerzenia odpowiedzialności, należy rozważyć utworzenie nowego silnika lub zmianę architektury, a nie przenoszenie logiki pomiędzy istniejącymi komponentami.
+
+Rozdzielenie odpowiedzialności jest jedną z podstawowych zasad utrzymywania czytelnej, skalowalnej i łatwej do rozwijania architektury ALCHEMIKA.
+
+---
+
+### SignalTiming
+
+#### Kanoniczna semantyka SignalTiming
+
+`SignalTiming` określa kanoniczną rolę czasową typu zdarzenia względem rozwijającej się sytuacji rynkowej.
+
+Odpowiada na pytanie:
+
+> W jakiej relacji czasowej do ruchu rynkowego znajduje się dany typ zdarzenia?
+
+`SignalTiming` jest właściwością `event_type`.
+
+Każdy kanoniczny `event_type` posiada dokładnie jedną, niezmienną klasę `SignalTiming`.
+
+Klasa nie jest wynikiem:
+
+- interpretacji AI,
+- lokalnej oceny silnika,
+- analizy konkretnego przypadku,
+- poziomu jakości,
+- poziomu priorytetu,
+- poziomu confidence.
+
+Interpretacja konkretnego zdarzenia może zależeć od kontekstu, historii instrumentu oraz innych sygnałów, ale nie zmienia kanonicznej klasy `SignalTiming` przypisanej do `event_type`.
+
+#### Klasy SignalTiming
+
+##### LEADING
+
+`LEADING` oznacza sygnał pojawiający się przed głównym impulsem lub w jego początkowej fazie.
+
+Sygnał tej klasy może wskazywać narodziny nowej okazji lub pierwszą nietypową zmianę zachowania instrumentu.
+
+`LEADING` nie oznacza automatycznie:
+
+- najwyższego priorytetu,
+- najwyższej jakości,
+- najwyższej pewności,
+- konieczności uruchomienia AI,
+- rekomendacji inwestycyjnej.
+
+##### CONFIRMING
+
+`CONFIRMING` oznacza sygnał potwierdzający, że wcześniej rozpoczęty ruch, trend albo zmiana zachowania instrumentu nadal się rozwija.
+
+Sygnał tej klasy zwiększa wiarygodność wcześniejszych zdarzeń, ale sam nie jest traktowany jako narodziny okazji.
+
+`CONFIRMING` nie jest mniej ważny od `LEADING`.
+
+##### WARNING
+
+`WARNING` oznacza sygnał ostrzegawczy dotyczący między innymi:
+
+- ryzyka,
+- osłabienia ruchu,
+- możliwego odwrócenia,
+- problemu z instrumentem,
+- problemu z płynnością,
+- problemu z jakością danych,
+- niezgodności pomiędzy sygnałami.
+
+`WARNING` nie oznacza automatycznego odrzucenia okazji.
+
+Informacja ostrzegawcza musi zostać przekazana dalej do kolejnych etapów pipeline'u.
+
+##### CONTEXT
+
+`CONTEXT` oznacza informację opisującą stan instrumentu, spółki, rynku lub otoczenia.
+
+Sygnał tej klasy samodzielnie nie określa początku, kontynuacji ani zakończenia ruchu.
+
+`CONTEXT` może być kluczowy dla:
+
+- AnalystEngine,
+- AI,
+- RiskEngine,
+- interpretacji przyczyny ruchu,
+- porównania z historią instrumentu.
+
+`CONTEXT` nie oznacza informacji mało ważnej.
+
+#### SignalTiming nie jest hierarchią
+
+Klasy:
+
+- `LEADING`
+- `CONFIRMING`
+- `WARNING`
+- `CONTEXT`
+
+nie tworzą hierarchii ważności.
+
+Nie wolno ich porównywać jako:
+
+- wyższe lub niższe,
+- ważniejsze lub mniej ważne,
+- nadrzędne lub podrzędne,
+- silniejsze lub słabsze.
+
+`SignalTiming` opisuje wyłącznie rolę czasową sygnału.
+
+Ważność, jakość oraz pewność zdarzenia są określane przez inne elementy kontraktu.
+
+#### Relacja z istniejącymi polami
+
+| Pole | Odpowiada na pytanie |
+|------|----------------------|
+| `priority_raw` | Jak ważny jest kanoniczny typ zdarzenia? |
+| `priority_final` | Jak ważne jest konkretne zdarzenie po uwzględnieniu kontekstu pipeline'u? |
+| `quality_level` | Na jakim poziomie zdarzenie kwalifikuje się do dalszego przetwarzania? |
+| `confidence_level` | Jak pewny jest wynik detekcji? |
+| `SignalTiming` | W jakiej relacji czasowej do ruchu znajduje się typ zdarzenia? |
+
+`SignalTiming` jest wymiarem niezależnym od:
+
+- `priority_raw`,
+- `priority_final`,
+- `quality_level`,
+- `confidence_level`.
+
+Dopuszczalne są wszystkie logiczne kombinacje tych wymiarów, między innymi:
+
+- `CRITICAL + WARNING`,
+- `HIGH + LEADING`,
+- `CRITICAL + CONTEXT`,
+- `MEDIUM + CONFIRMING`.
+
+Klasa czasowa nie określa wartości inwestycyjnej zdarzenia.
+
+#### Oddzielenie zdarzenia od interpretacji
+
+Obowiązuje następujący podział odpowiedzialności:
+
+```text
+event_type
+    ↓
+SignalTiming
+    ↓
+priority
+    ↓
+quality
+    ↓
+decision
+    ↓
+AI
+    ↓
+interpretacja
+```
+
+`SignalTiming` jest kanoniczną cechą typu zdarzenia.
+
+AI interpretuje konkretne wystąpienie zdarzenia w kontekście:
+
+- historii instrumentu,
+- ceny,
+- wolumenu,
+- innych zdarzeń,
+- ryzyka,
+- danych fundamentalnych,
+- newsów,
+- sytuacji rynkowej.
+
+AI nie zmienia kanonicznej klasy `SignalTiming`.
+
+#### Odpowiedzialność silników
+
+Detektory wykrywają zdarzenia i przypisują im dane wynikające z kanonicznego katalogu zdarzeń.
+
+QualityEngine ocenia jakość zdarzenia.
+
+DecisionEngine kwalifikuje dalszą ścieżkę analizy.
+
+AnalystEngine oraz AI interpretują pełny kontekst.
+
+Żaden z tych etapów nie może zmieniać kanonicznej klasy `SignalTiming` przypisanej do `event_type`.
+
+#### Zasada wdrożeniowa
+
+Przed implementacją `SignalTiming`:
+
+- wszystkie kanoniczne `event_type` muszą posiadać dokładnie jedną zatwierdzoną klasę;
+- sposób reprezentacji Composite Event musi zostać zaprojektowany w ramach modelu domenowego;
+- kontrakt propagacji pola przez pipeline musi zostać zatwierdzony;
+- nie wolno wprowadzać arbitralnych wag liczbowych dla klas `SignalTiming`;
+- zmiany QualityEngine i DecisionEngine mogą zostać wykonane dopiero po zapisaniu i zatwierdzeniu kontraktu modelu.
+
+### Composite Event i SignalTiming
+
+Composite Event może zawierać zdarzenia należące do różnych klas `SignalTiming`.
+
+Sposób reprezentacji tej informacji zostanie zaprojektowany podczas projektowania modelu domenowego.
+
+Na obecnym etapie nie ustala się:
+
+- liczby pól,
+- typu kolekcji,
+- sposobu agregacji,
+- klasy dominującej,
+- mechanizmu redukcji klas składników.
+
+Żadna klasa `SignalTiming` nie może zostać utracona wyłącznie dlatego, że Composite Event zawiera również zdarzenia należące do innych klas.
 
 ---
 
@@ -105,10 +400,75 @@ Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 - **Cel**: Ocena i rankingowanie danych
 
 ### 5.5 Risk Engine (`engines/risk/`)
-- **Cel**: Ocena ryzyka (risk_score, risk_level, stop_loss, take_profit)
+
+RiskEngine odpowiada za ocenę i opis ryzyka instrumentu.
+
+Rolą RiskEngine jest identyfikacja, opis oraz kwantyfikacja ryzyka.
+
+Silnik:
+
+- identyfikuje czynniki ryzyka,
+- wylicza miary ryzyka,
+- przygotowuje informacje dla kolejnych etapów pipeline'u.
+
+RiskEngine nie podejmuje decyzji inwestycyjnych.
+
+RiskEngine nie eliminuje okazji inwestycyjnych.
+
+RiskEngine nie powinien blokować instrumentu na podstawie arbitralnych wag ani lokalnych decyzji implementacyjnych.
+
+Wszystkie informacje o ryzyku przekazywane są dalej do kolejnych silników.
+
+Końcowa decyzja dotycząca atrakcyjności okazji nie należy do RiskEngine.
 
 ### 5.6 Hunter Engine (`engines/hunter/`)
-- **Cel**: Gromadzenie surowych danych z Yahoo Finance
+
+**Cel:** identyfikacja potencjalnych okazji na podstawie danych oraz wyników wcześniejszych etapów pipeline'u.
+
+HunterEngine jest wykorzystywany w dwóch kontekstach.
+
+#### Poziom rynku
+
+Na poziomie `RuntimeService` HunterEngine analizuje listę kandydatów pochodzących ze skanowania rynku.
+
+Jego zadaniem jest:
+
+- wstępna selekcja instrumentów,
+- identyfikacja kandydatów wymagających dalszej analizy,
+- uporządkowanie okazji,
+- przekazanie zakwalifikowanych instrumentów do analizy pojedynczego tickera.
+
+Wynikiem tego etapu jest `HunterScanResult`, zawierający listę zakwalifikowanych `HunterResult` oraz statystyki skanowania.
+
+#### Poziom pojedynczego tickera
+
+W `MasterEngine` HunterEngine otrzymuje wyniki wcześniejszych silników dla jednego instrumentu, w szczególności:
+
+- `instrument_id`,
+- `ranking_score`,
+- `risk_score`,
+- `confidence`.
+
+Jego zadaniem jest:
+
+- zebranie wyników wcześniejszych etapów,
+- utworzenie pojedynczego `HunterResult`,
+- przekazanie uporządkowanej informacji o okazji do `AnalystEngine`.
+
+W tym kontekście HunterEngine nie wykonuje ponownego skanowania rynku i nie pobiera danych z Yahoo Finance.
+
+#### Granice odpowiedzialności
+
+HunterEngine:
+
+- nie wykonuje analizy technicznej,
+- nie oblicza ryzyka,
+- nie tworzy rankingu,
+- nie interpretuje newsów,
+- nie podejmuje decyzji inwestycyjnej,
+- nie zastępuje AnalystEngine ani AI.
+
+HunterEngine wykorzystuje wyniki wcześniejszych silników zgodnie z zasadą separacji odpowiedzialności i przekazuje je dalej w ujednoliconym modelu.
 
 ### 5.7 Analyst Engine (`engines/analyst/`)
 - **Cel**: Generowanie końcowej analizy (FinalAnalysisResult)
@@ -176,6 +536,8 @@ Runtime → SQLite → ReadService → FastAPI → HTTP → Frontend
 Szczegółowy kontrakt wymiany danych pomiędzy modułami znajduje się w `docs/Kontrakt_Zdarzen_Rynkowych.md`.
 
 Obiekt `MarketEvent` zawiera 27 pól, przechodzi przez 13 etapów cyklu życia, obsługiwany przez 11 modułów z jasno określoną odpowiedzialnością.
+
+Filozofia odpowiedzialności modelu `EventOutcome` — opisującego rezultaty zdarzeń rynkowych — znajduje się w `docs/FILOZOFIA_EVENTOUTCOME.md`.
 
 ---
 
@@ -286,7 +648,7 @@ Szczegółowa architektura frontendu: `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md`
 
 **Lokalizacja**: `data/runtime/alchemik_runtime.db`
 **Tryb**: WAL (Write-Ahead Logging) dla bezpiecznego współbieżnego dostępu
-**Tabele**: `cycles`, `market_events`
+**Tabele**: `cycles`, `market_events`, `event_outcomes`, `session_outcomes`
 
 ---
 
@@ -300,6 +662,20 @@ Szczegółowa architektura frontendu: `docs/ETAP_5_ARCHITEKTURA_FRONTENDU.md`
 - `engines/ai/prompt_builder.py` — budowanie promptów
 
 **Zasada**: AI jest uruchamiana wyłącznie dla zdarzeń o priorytecie Critical/High, wymagających interpretacji kontekstu. Decyzję podejmuje `DecisionEngine.decide_pipeline()` na podstawie `quality_level`.
+
+AI otrzymuje możliwie pełny obraz rynku.
+
+Dane nie powinny być wcześniej ograniczane przez arbitralne decyzje poszczególnych silników.
+
+Ocena końcowa powinna uwzględniać jednocześnie:
+
+- analizę techniczną,
+- analizę ryzyka,
+- historię podobnych zachowań instrumentu,
+- informacje fundamentalne,
+- dane newsowe,
+- kontekst rynkowy,
+- pozostałe informacje zgromadzone przez pipeline.
 
 ---
 
@@ -479,6 +855,7 @@ c:\alchemik\
 │   ├── ETAP_6_ARCHITEKTURA.md
 │   ├── ETAP_7_PLAN.md
 │   ├── FILOZOFIA_ALCHEMIKA.md
+│   ├── FILOZOFIA_EVENTOUTCOME.md
 │   ├── Hierarchia_Zdarzen_Rynkowych.md
 │   ├── INSTRUKCJA_DLA_CLINE.md
 │   ├── Katalog_Zdarzen_Rynkowych.md
@@ -579,7 +956,19 @@ Wszystkie etapy od ETAP 1 do ETAP 6 (FAZA 1 i FAZA 2) są zamrożone. Zgodnie z 
 
 ---
 
-## 18. Roadmapa projektu
+## 18. Zasada przepływu informacji
+
+Podstawową zasadą architektury ALCHEMIKA jest maksymalizacja informacji przekazywanej pomiędzy silnikami.
+
+Silniki powinny opisywać stan rynku oraz wyniki własnej analizy.
+
+Nie powinny podejmować decyzji eliminujących okazje, jeżeli decyzja ta wymaga szerszego kontekstu dostępnego dopiero w kolejnych etapach pipeline'u.
+
+Wyjątkiem są wyłącznie przypadki naruszenia kontraktów danych lub błędów uniemożliwiających dalsze przetwarzanie.
+
+---
+
+## 19. Roadmapa projektu
 
 | Etap | Status | Opis |
 |------|--------|------|
@@ -603,7 +992,7 @@ Wszystkie etapy od ETAP 1 do ETAP 6 (FAZA 1 i FAZA 2) są zamrożone. Zgodnie z 
 
 ---
 
-## 19. Aktualny stan projektu
+## 20. Aktualny stan projektu
 
 - Backend: kompletny, zamrożony (ETAP 1–6)
 - Frontend: kompletny, zamrożony
@@ -622,7 +1011,7 @@ Wszystkie etapy od ETAP 1 do ETAP 6 (FAZA 1 i FAZA 2) są zamrożone. Zgodnie z 
 
 ---
 
-## 20. Następny etap
+## 21. Następny etap
 
 **ETAP 7.6** — rozbudowa dashboardu o widoki zdarzeniowe.
 
@@ -630,11 +1019,14 @@ Szczegóły w `docs/ETAP_7_PLAN.md` §7.6.
 
 ---
 
-## 21. Dokumenty projektu
+## 22. Dokumenty projektu
 
 | Dokument | Lokalizacja | Opis |
 |----------|-------------|------|
 | Filozofia | `docs/FILOZOFIA_ALCHEMIKA.md` | Filozofia działania |
+| Filozofia EventOutcome | `docs/FILOZOFIA_EVENTOUTCOME.md` | Filozofia odpowiedzialności modelu EventOutcome — rezultatów zdarzeń rynkowych |
+| Model EventOutcome | `docs/MODEL_EVENTOUTCOME.md` | Projekt domenowy modelu EventOutcome |
+| Model SessionOutcome | `docs/MODEL_SESSIONOUTCOME.md` | Projekt domenowy modelu SessionOutcome — wynik horyzontu sesyjnego |
 | Zasady projektu | `docs/ZASADY_PROJEKTU.md` | Zasady realizacji |
 | Instrukcja Cline | `docs/INSTRUKCJA_DLA_CLINE.md` | Zasady pracy dla Cline |
 | Przepływ danych | `docs/Przeplyw_Danych.md` | Przepływ między silnikami |

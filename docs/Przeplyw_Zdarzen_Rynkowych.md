@@ -1270,6 +1270,9 @@ Wersja: 1.0
 Autor: Zespół ALCHEMIK
 Status: Dokument projektowy — przepływ wykrywania zdarzeń rynkowych
 
+Dokumenty powiązane:
+- `docs/FILOZOFIA_EVENTOUTCOME.md` — opisuje filozofię odpowiedzialności modelu EventOutcome, który przechowuje rezultaty zdarzeń rynkowych po ich archiwizacji
+
 Bazuje na:
 - `docs/FILOZOFIA_ALCHEMIKA.md`
 - `docs/Katalog_Zdarzen_Rynkowych.md` v2.0

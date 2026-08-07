@@ -1046,6 +1046,9 @@ Wersja: 1.0
 Autor: Zespół ALCHEMIK
 Status: Dokument projektowy — kontrakt wymiany danych pomiędzy modułami
 
+Dokumenty powiązane:
+- `docs/FILOZOFIA_EVENTOUTCOME.md` — opisuje filozofię odpowiedzialności modelu EventOutcome, który przechowuje rezultaty zdarzeń rynkowych (MarketEvent)
+
 Bazuje na:
 - `docs/FILOZOFIA_ALCHEMIKA.md`
 - `docs/Katalog_Zdarzen_Rynkowych.md` v2.0
