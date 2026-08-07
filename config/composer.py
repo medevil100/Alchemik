@@ -30,7 +30,7 @@ class ComposerConfig:
 
     time_window_seconds: int = 60
     max_composite_events: int = 10
-    default_event_type: str = "COMPOSITE_MULTI_EVENT"
+    default_event_type: str = "COMPOSITE_EVENT"
     default_event_family: str = "SYSTEM"
 
 

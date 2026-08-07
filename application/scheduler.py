@@ -12,7 +12,7 @@ class RuntimeScheduler:
 
     def run_once(self):
         try:
-            self.runtime_service.run()
+            self.runtime_service.run_cycle()
         except Exception as e:
             if not self.continue_on_error:
                 raise
