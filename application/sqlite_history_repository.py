@@ -135,6 +135,45 @@ class SQLiteHistoryRepository:
 
         CREATE INDEX IF NOT EXISTS idx_session_outcomes_event_outcome_id ON session_outcomes(event_outcome_id);
         CREATE INDEX IF NOT EXISTS idx_session_outcomes_state ON session_outcomes(state);
+
+        CREATE TABLE IF NOT EXISTS instrument_observations (
+            observation_id TEXT PRIMARY KEY,
+            instrument_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT NOT NULL,
+            terminated_at TEXT,
+            termination_reason TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_obs_instrument_state
+            ON instrument_observations(instrument_id, state);
+
+        CREATE TABLE IF NOT EXISTS instrument_readings (
+            reading_id TEXT PRIMARY KEY,
+            observation_id TEXT NOT NULL,
+            instrument_id TEXT NOT NULL,
+            market_data_timestamp TEXT NOT NULL,
+            scan_timestamp TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            source TEXT NOT NULL DEFAULT 'YahooFinance',
+            prev_reading_id TEXT,
+            data_completeness TEXT NOT NULL DEFAULT 'COMPLETE',
+            FOREIGN KEY (observation_id) REFERENCES instrument_observations(observation_id)
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_identity
+            ON instrument_readings(instrument_id, market_data_timestamp);
+
+        CREATE INDEX IF NOT EXISTS idx_readings_observation
+            ON instrument_readings(observation_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_observation
+            ON instrument_observations(instrument_id)
+            WHERE state = 'ACTIVE';
     """
 
     SQL_WAL_PRAGMAS = """
@@ -160,28 +199,19 @@ class SQLiteHistoryRepository:
         """Create schema and apply WAL pragmas idempotently."""
         conn = sqlite3.connect(str(self.db_path))
         try:
-            cursor = conn.cursor()
-
             # Enable WAL and safety pragmas
-            for pragma in self.SQL_WAL_PRAGMAS.strip().split(";"):
-                pragma = pragma.strip()
-                if pragma:
-                    cursor.execute(pragma)
-
-            # Create tables
-            for stmt in self.SQL_CREATE_TABLES.strip().split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    cursor.execute(stmt)
+            conn.executescript(self.SQL_WAL_PRAGMAS)
+            # Create all tables, indexes, and triggers
+            conn.executescript(self.SQL_CREATE_TABLES)
 
             # Set schema version if not already set
+            cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM schema_version")
             if cursor.fetchone()[0] == 0:
                 cursor.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (self.SCHEMA_VERSION,),
                 )
-
             conn.commit()
         finally:
             conn.close()
@@ -1591,6 +1621,354 @@ class SQLiteHistoryRepository:
                     failure_reason=row[18],
                     invalid_reason=row[19],
                 ))
+            return results
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # InstrumentReading / InstrumentObservation persistence (KROK 5)
+    # ------------------------------------------------------------------
+
+    def save_reading(self, observation, reading) -> str:
+        """
+        Atomowo zapisz InstrumentObservation i InstrumentReading.
+
+        Otrzymuje istniejącą lub nowo utworzoną Observation (pierwszy argument)
+        oraz Reading (drugi argument). Repozytorium zapisuje oba atomowo;
+        nie tworzy Observation samodzielnie.
+
+        Returns one of: ACCEPTED, DUPLICATE_NO_OP, CONFLICT, STALE_TIMESTAMP.
+        """
+        instrument_id = observation.instrument_id
+        observation_id = observation.observation_id
+        market_ts = reading.market_data_timestamp
+        market_ts_iso = market_ts.isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            # 0. Check if the observation already exists in a terminal state
+            cursor.execute(
+                "SELECT state FROM instrument_observations WHERE observation_id=?",
+                (observation_id,),
+            )
+            obs_row = cursor.fetchone()
+            if obs_row is not None and obs_row[0] in (
+                "INTEGRITY_BREACHED", "TERMINATED_DOMAIN", "TERMINATED_TECHNICAL",
+            ):
+                raise ValueError(
+                    f"Cannot add reading to terminal observation {observation_id}"
+                )
+
+            # 1. Check if there is an existing reading for this identity
+            cursor.execute(
+                """SELECT r.reading_id, r.open, r.high, r.low, r.close, r.volume,
+                          r.data_completeness, r.source
+                   FROM instrument_readings r
+                   WHERE r.instrument_id = ? AND r.market_data_timestamp = ?
+                   LIMIT 1""",
+                (instrument_id, market_ts_iso),
+            )
+            existing = cursor.fetchone()
+
+            if existing is not None:
+                existing_rdg_id, ex_open, ex_high, ex_low, ex_close, ex_volume, \
+                    ex_completeness, ex_source = existing
+
+                same_content = (
+                    (reading.open == ex_open) and
+                    (reading.high == ex_high) and
+                    (reading.low == ex_low) and
+                    (reading.close == ex_close) and
+                    (reading.volume == ex_volume) and
+                    (reading.data_completeness == ex_completeness) and
+                    (reading.source == ex_source)
+                )
+
+                if same_content:
+                    return "DUPLICATE_NO_OP"
+                else:
+                    # Conflict: atomically terminate ACTIVE observation for this instrument
+                    cursor.execute(
+                        """UPDATE instrument_observations
+                           SET state = 'INTEGRITY_BREACHED',
+                               terminated_at = ?,
+                               termination_reason = ?
+                           WHERE instrument_id = ? AND state = 'ACTIVE'""",
+                        (
+                            now_iso,
+                            f"Content conflict at {market_ts_iso}",
+                            instrument_id,
+                        ),
+                    )
+                    conn.commit()
+                    return "CONFLICT"
+
+            # 2. STALE_TIMESTAMP check
+            cursor.execute(
+                """SELECT market_data_timestamp FROM instrument_readings
+                   WHERE instrument_id = ?
+                   ORDER BY market_data_timestamp DESC
+                   LIMIT 1""",
+                (instrument_id,),
+            )
+            last_row = cursor.fetchone()
+            if last_row is not None and market_ts_iso < last_row[0]:
+                return "STALE_TIMESTAMP"
+
+            # 3. Determine prev_reading_id (only within the current observation)
+            prev_reading_id = None
+            cursor.execute(
+                """SELECT reading_id FROM instrument_readings
+                   WHERE instrument_id = ? AND observation_id = ?
+                   ORDER BY market_data_timestamp DESC
+                   LIMIT 1""",
+                (instrument_id, observation_id),
+            )
+            last_rdg = cursor.fetchone()
+            if last_rdg is not None:
+                prev_reading_id = last_rdg[0]
+
+            # 4. Insert observation using non-destructive logic
+            # 4. Non-destructive observation insert
+            cursor.execute(
+                "SELECT observation_id, instrument_id, state "
+                "FROM instrument_observations WHERE observation_id=?",
+                (observation_id,),
+            )
+            existing_obs = cursor.fetchone()
+            if existing_obs is None:
+                self._insert_observation(cursor, observation, now_iso)
+            else:
+                ex_obs_id, ex_instr_id, ex_state = existing_obs
+                if ex_state in ("INTEGRITY_BREACHED", "TERMINATED_DOMAIN", "TERMINATED_TECHNICAL"):
+                    raise ValueError(
+                        f"Cannot add reading to terminal observation {observation_id}"
+                    )
+                if ex_instr_id != instrument_id:
+                    raise ValueError(
+                        f"Observation {observation_id} belongs to instrument {ex_instr_id}, "
+                        f"not {instrument_id}"
+                    )
+                if ex_state == "ACTIVE" and ex_obs_id == observation_id:
+                    # Same observation, same instrument — proceed without re-inserting
+                    pass
+
+            # 5. Insert the reading
+            cursor.execute(
+                """INSERT INTO instrument_readings
+                   (reading_id, observation_id, instrument_id,
+                    market_data_timestamp, scan_timestamp,
+                    open, high, low, close, volume,
+                    source, prev_reading_id, data_completeness)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    reading.reading_id,
+                    observation_id,
+                    instrument_id,
+                    market_ts_iso,
+                    reading.scan_timestamp.isoformat(),
+                    reading.open,
+                    reading.high,
+                    reading.low,
+                    reading.close,
+                    reading.volume,
+                    reading.source,
+                    prev_reading_id,
+                    reading.data_completeness,
+                ),
+            )
+
+            conn.commit()
+            return "ACCEPTED"
+
+        except sqlite3.IntegrityError as exc:
+            err_msg = str(exc).lower()
+            # Partial UNIQUE index violation = second ACTIVE observation
+            if "idx_one_active_observation" in err_msg:
+                conn.rollback()
+                raise ValueError(
+                    f"Cannot create second ACTIVE observation for instrument {instrument_id}"
+                )
+            # UNIQUE constraint on reading identity → classify
+            if "idx_readings_identity" in err_msg:
+                conn.rollback()
+                return self._handle_identity_conflict(
+                    instrument_id, market_ts_iso, reading, observation_id, exc,
+                )
+            # All other integrity errors propagate as technical errors
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _insert_observation(self, cursor, observation, now_iso):
+        """Insert a new observation. Raises ValueError if INSERT fails
+        due to partial UNIQUE index (second ACTIVE observation)."""
+        try:
+            cursor.execute(
+                """INSERT INTO instrument_observations
+                   (observation_id, instrument_id, state, created_at,
+                    terminated_at, termination_reason)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    observation.observation_id,
+                    observation.instrument_id,
+                    observation.state,
+                    observation.created_at.isoformat() if observation.created_at else now_iso,
+                    observation.terminated_at.isoformat() if observation.terminated_at else None,
+                    observation.termination_reason,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(
+                f"Cannot create second ACTIVE observation "
+                f"for instrument {observation.instrument_id}"
+            )
+
+    def _handle_identity_conflict(self, instrument_id, market_ts_iso, reading, observation_id, original_error):
+        """When UNIQUE constraint on (instrument_id, market_data_timestamp)
+        is violated, re-read the existing row and classify.
+        If the row disappeared, re-raise the original error."""
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT r.open, r.high, r.low, r.close, r.volume,
+                          r.data_completeness, r.source
+                   FROM instrument_readings r
+                   WHERE r.instrument_id = ? AND r.market_data_timestamp = ?
+                   LIMIT 1""",
+                (instrument_id, market_ts_iso),
+            )
+            ex = cursor.fetchone()
+            if ex is None:
+                raise original_error  # Row disappeared — propagate
+            ex_open, ex_high, ex_low, ex_close, ex_volume, ex_completeness, ex_source = ex
+            same_content = (
+                (reading.open == ex_open) and
+                (reading.high == ex_high) and
+                (reading.low == ex_low) and
+                (reading.close == ex_close) and
+                (reading.volume == ex_volume) and
+                (reading.data_completeness == ex_completeness) and
+                (reading.source == ex_source)
+            )
+            if same_content:
+                return "DUPLICATE_NO_OP"
+            else:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                cursor.execute(
+                    """UPDATE instrument_observations
+                       SET state = 'INTEGRITY_BREACHED',
+                           terminated_at = ?,
+                           termination_reason = ?
+                       WHERE instrument_id = ? AND state = 'ACTIVE'""",
+                    (now_iso, f"Content conflict at {market_ts_iso}", instrument_id),
+                )
+                conn.commit()
+                return "CONFLICT"
+        finally:
+            conn.close()
+
+    def load_observation(self, instrument_id: str):
+        """
+        Wczytaj ACTIVE InstrumentObservation po instrument_id.
+
+        Zwraca InstrumentObservation lub None, jeżeli nie ma ACTIVE.
+        """
+        from data.models.instrument_observation import InstrumentObservation
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT observation_id, instrument_id, state, created_at,
+                          terminated_at, termination_reason
+                   FROM instrument_observations
+                   WHERE instrument_id = ? AND state = 'ACTIVE'
+                   LIMIT 1""",
+                (instrument_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            return InstrumentObservation(
+                observation_id=row[0],
+                instrument_id=row[1],
+                state=row[2],
+                created_at=datetime.fromisoformat(row[3]),
+                terminated_at=datetime.fromisoformat(row[4]) if row[4] else None,
+                termination_reason=row[5],
+            )
+        finally:
+            conn.close()
+
+    def restore_active_observations(self) -> list:
+        """
+        Restore all ACTIVE Observations with their last accepted Reading
+        (by greatest market_data_timestamp).
+
+        Returns a list of (InstrumentObservation, InstrumentReading) tuples.
+        """
+        from data.models.instrument_observation import InstrumentObservation
+        from data.models.instrument_reading import InstrumentReading
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT o.observation_id, o.instrument_id, o.state,
+                          o.created_at, o.terminated_at, o.termination_reason,
+                          r.reading_id, r.instrument_id, r.market_data_timestamp,
+                          r.scan_timestamp, r.open, r.high, r.low, r.close,
+                          r.volume, r.source, r.prev_reading_id,
+                          r.data_completeness
+                   FROM instrument_observations o
+                   JOIN instrument_readings r ON r.observation_id = o.observation_id
+                   WHERE o.state = 'ACTIVE'
+                     AND r.market_data_timestamp = (
+                         SELECT MAX(r2.market_data_timestamp)
+                         FROM instrument_readings r2
+                         WHERE r2.observation_id = o.observation_id
+                     )
+                   ORDER BY o.instrument_id""",
+            )
+
+            results = []
+            for row in cursor.fetchall():
+                obs = InstrumentObservation(
+                    observation_id=row[0],
+                    instrument_id=row[1],
+                    state=row[2],
+                    created_at=datetime.fromisoformat(row[3]),
+                    terminated_at=datetime.fromisoformat(row[4]) if row[4] else None,
+                    termination_reason=row[5],
+                )
+
+                reading = InstrumentReading(
+                    reading_id=row[6],
+                    observation_id=row[0],
+                    instrument_id=row[7],
+                    market_data_timestamp=datetime.fromisoformat(row[8]),
+                    scan_timestamp=datetime.fromisoformat(row[9]),
+                    open=row[10],
+                    high=row[11],
+                    low=row[12],
+                    close=row[13],
+                    volume=row[14],
+                    source=row[15],
+                    prev_reading_id=row[16],
+                    data_completeness=row[17],
+                )
+
+                results.append((obs, reading))
+
             return results
         finally:
             conn.close()
