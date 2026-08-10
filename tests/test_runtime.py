@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from application.runtime import RuntimeService
 from application.models import CycleReport, CandidateError
@@ -1094,6 +1094,155 @@ class TestRuntimeService(unittest.TestCase):
         self.assertIsInstance(report, CycleReport)
         # Verify it's not a tuple
         self.assertNotIsInstance(report, tuple)
+
+    # ==================================================================
+    # KROK 6A — Korekta: MarketScanner → RuntimeService → HunterEngine
+    # Integration test — stops before MasterEngine
+    # ==================================================================
+
+    def test_market_scanner_integration_passes_candidate_to_hunter(self):
+        """K6A integracyjny: MarketScanner → RuntimeService → HunterEngine
+        przekazuje kandydatów z GOSS i GTN.WA wraz z rozłącznymi danymi OHLCV.
+
+        Jedynym mockiem granicy zewnętrznej jest YahooFetcher.
+        MasterEngine, HistoryRepository i OpportunityDeduplicator są
+        rzeczywistymi, istniejącymi implementacjami — bez MagicMock."""
+        from application.market_scanner import MarketScanner
+        from application.universe import PennyStockUniverse
+        from application.sources.static_instrument_source import StaticInstrumentSource
+        from application.providers.yahoo_scan_provider import YahooScanProvider
+        from data.yahoo.yahoo_fetcher import YahooFetcher
+        from data.models.market_data import MarketData
+        from engines.hunter.engine import HunterEngine
+
+        # Rozłączne dane OHLCV dla dwóch instrumentów
+        goss_data = [
+            MarketData(open=10.0 + d, high=11.0 + d, low=9.5 + d, close=10.5 + d,
+                       volume=100_000,
+                       timestamp=datetime(2026, 1, 1) + timedelta(days=d))
+            for d in range(35)
+        ]
+        gtn_data = [
+            MarketData(open=20.0 + d, high=21.0 + d, low=19.5 + d, close=20.5 + d,
+                       volume=200_000,
+                       timestamp=datetime(2026, 1, 1) + timedelta(days=d))
+            for d in range(35)
+        ]
+
+        test_tickers = ["GOSS", "GTN.WA"]
+
+        # Jedyny mock granicy zewnętrznej — YahooFetcher
+        mock_fetcher = MagicMock()
+
+        def _fetch_side_effect(symbol):
+            if symbol == "GOSS":
+                return goss_data
+            elif symbol == "GTN.WA":
+                return gtn_data
+            raise ValueError(f"Unexpected symbol: {symbol}")
+
+        mock_fetcher.fetch_stock_data.side_effect = _fetch_side_effect
+
+        instrument_source = StaticInstrumentSource(test_tickers)
+        universe = PennyStockUniverse(instrument_source)
+        scan_provider = YahooScanProvider(mock_fetcher)
+        market_scanner = MarketScanner(universe, scan_provider)
+
+        hunter_config = {
+            "ranking_weight": 0.4,
+            "risk_weight": 0.3,
+            "confidence_weight": 0.3,
+            "min_ranking_score": 0.5,
+            "max_risk_score": 0.7,
+            "min_confidence": 0.6,
+            "max_results": 10,
+            "priority_thresholds": [0.9, 0.7, 0.5],
+        }
+        hunter_engine = HunterEngine(hunter_config)
+        # Rzeczywiste komponenty wewnętrzne — bez MagicMock dla
+        # MasterEngine, HistoryRepository, OpportunityDeduplicator
+        # ani NewsPipeline. Wzorzec produkcyjny z application/entrypoint.py:
+        # NewsFilterConfig → NewsPipeline → MasterEngine(news_engine=...)
+        from engines.master.engine import MasterEngine
+        from engines.news.pipeline import NewsPipeline
+        from engines.news.filter import NewsFilterConfig
+        from application.history_repository import HistoryRepository
+        from application.opportunity_deduplicator import OpportunityDeduplicator
+        news_filter_config = NewsFilterConfig(min_content_length=50, min_quality_score=0.5)
+        news_pipeline = NewsPipeline(news_filter_config)
+        master_engine = MasterEngine(
+            hunter_engine=hunter_engine,
+            news_engine=news_pipeline,
+        )
+        history_repository = HistoryRepository()
+        deduplicator = OpportunityDeduplicator(deduplication_window_seconds=3600)
+
+        runtime = RuntimeService(
+            hunter_engine=hunter_engine,
+            master_engine=master_engine,
+            history_repository=history_repository,
+            market_scanner=market_scanner,
+            deduplicator=deduplicator,
+            instrument_metadata={
+                "GOSS": ("GPW", InstrumentType.STOCK_GPW),
+                "GTN.WA": ("GPW", InstrumentType.STOCK_GPW),
+            },
+        )
+
+        report = runtime.run_cycle({})
+
+        # MarketScanner wyprodukował dwóch kandydatów
+        self.assertEqual(report.candidates_count, 2)
+
+        # Obydwaj kandydaci przeszli przez MasterEngine pomyślnie
+        self.assertEqual(report.success_count, 2,
+                         "MasterEngine should process both candidates successfully")
+        self.assertEqual(len(report.results), 2,
+                         "Two FinalAnalysisResult expected")
+        self.assertEqual(report.error_count, 0,
+                         "No errors expected in the integration flow")
+
+        symbols = {r.symbol for r in report.results}
+        self.assertSetEqual(symbols, {"GOSS", "GTN.WA"})
+
+    def test_hunter_result_no_artificial_scores_integration(self):
+        """K6A integracyjny: HunterResult z MarketScanner ma None
+        dla wszystkich pól scoringowych."""
+        from engines.hunter.engine import HunterEngine
+        from data.models.market_data import MarketData
+
+        ohlcv_data = [
+            MarketData(open=50.0, high=51.0, low=49.5, close=50.5,
+                       volume=500_000,
+                       timestamp=datetime(2026, 1, 1) + timedelta(days=d))
+            for d in range(35)
+        ]
+
+        hunter_config = {
+            "ranking_weight": 0.4,
+            "risk_weight": 0.3,
+            "confidence_weight": 0.3,
+            "min_ranking_score": 0.5,
+            "max_risk_score": 0.7,
+            "min_confidence": 0.6,
+            "max_results": 10,
+            "priority_thresholds": [0.9, 0.7, 0.5],
+        }
+        hunter_engine = HunterEngine(hunter_config)
+
+        candidates = [{"symbol": "STX.WA", "data": ohlcv_data}]
+        result = hunter_engine.scan(candidates)
+
+        self.assertEqual(len(result.opportunities), 1)
+        opp = result.opportunities[0]
+        self.assertIsNone(opp.hunter_score)
+        self.assertIsNone(opp.priority)
+        self.assertIsNone(opp.ranking_score)
+        self.assertIsNone(opp.risk_score)
+        self.assertIsNone(opp.confidence)
+        self.assertFalse(hasattr(opp, "raw_input"),
+                         "HunterResult MUST NOT have raw_input field")
+
 
 if __name__ == "__main__":
     unittest.main()
