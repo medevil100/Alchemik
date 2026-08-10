@@ -299,28 +299,50 @@ Data: 09.08.2026
 
 ### 11.B Status wyników
 
+**Historyczne wyniki (09.08.2026):**
+
 - 09.08.2026 właściciel niezależnie uruchomił pełny blok PowerShell w `C:\alchemik`.
-- Użyty interpreter: `C:\alchemik\.venv\Scripts\python.exe`, Python 3.13.13.
 - `tests/test_observation_persistence.py`: 48 passed.
 - Trzy testy zgodności trwałości: 122 passed.
 - Kolekcja: 1578 tests collected.
 - Pełna regresja: 1578 passed, 41 subtests passed.
-- Staging był pusty przed testami oraz po każdym etapie bloku.
-- Stan Git pozostał niezmieniony: sześć zmian unstaged i trzy pliki untracked.
+
+**Aktualny wynik referencyjny — niezależna weryfikacja właściciela z 10.08.2026:**
+
+- `tests/test_runtime_observation_integration.py`: 22 passed.
+- Trzy testy trwałości: 122 passed.
+- Kolekcja: 1600 tests collected.
+- Pełna regresja: 1600 passed, 41 subtests passed.
+- Staging pusty przed i po testach.
+- Stan Git identyczny przed i po testach.
+- `git diff --check` oraz `git diff --cached --check` czyste.
 - Wynik funkcjonalny jest niezależnie potwierdzony przez właściciela.
 - Repozytorium nadal nie jest GREEN, ponieważ Git nie jest czysty.
 
-### 11.C Faktyczny stan repozytorium
+### 11.C Faktyczny stan repozytorium — stan bezpośrednio po pierwszym commicie kodu, przed commitem dokumentacyjnym (10.08.2026)
 
+- pierwszy ograniczony lokalny commit kodu Runtime → Observation wykonany:
+  hash `fb32064795a28c28f3acb8fd1e400b2a325f9cfb`,
+  komunikat `feat(runtime): persist observations before hunter`,
+  zawiera dokładnie trzy pliki:
+  `application/runtime.py`,
+  `application/entrypoint.py`,
+  `tests/test_runtime_observation_integration.py`;
 - staging pusty;
-- cztery pliki unstaged, wyłącznie zamrożony Market Hunter:
+- sześć plików unstaged:
   `data/models/hunter_result.py`,
+  `docs/00_ALCHEMIK_KANON_NAPRAWY.md`,
+  `docs/ALCHEMIK_CHECKPOINT_PRACY.md`,
   `engines/hunter/engine.py`,
   `tests/test_hunter_engine.py`,
   `tests/test_runtime.py`;
 - brak plików untracked;
-- repozytorium nadal NIE GREEN, ponieważ pozostają cztery zamrożone zmiany unstaged;
-- zmiany Market Huntera pozostają zamrożone i niezatwierdzone architektonicznie.
+- repozytorium nadal NIE GREEN — istnieje 6 zmian unstaged;
+- cztery pliki K6A pozostają zamrożone i niezatwierdzone architektonicznie:
+  `data/models/hunter_result.py`,
+  `engines/hunter/engine.py`,
+  `tests/test_hunter_engine.py`,
+  `tests/test_runtime.py`.
 
 ### 11.D Plan następnej sesji — obowiązująca kolejność
 
@@ -340,10 +362,67 @@ Data: 09.08.2026
 
 ---
 
+## 12. ZATWIERDZONE DECYZJE — GRANICA RUNTIMESERVICE → TRWAŁOŚĆ
+
+Poniższe decyzje zostały zatwierdzone przez właściciela 09.08.2026.
+
+| # | Decyzja | Status |
+|---|---------|--------|
+| 1 | Jeden poprawny kandydat rynku może utworzyć jeden `InstrumentReading` wyłącznie z najnowszego dostępnego `MarketData`, określonego przez największy źródłowy `market_data_timestamp`. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 2 | Pełna lista OHLCV pobrana przez Yahoo Finance, w tym kontekst historyczny do 52 tygodni, pozostaje kontekstem analitycznym. Nie jest automatycznie zamieniana na wiele nowych Readingów podczas każdego skanu i nie jest przenoszona przez `HunterResult`. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 3 | `NO_DATA`, `SOURCE_ERROR` i timeout nie tworzą `InstrumentReading`, nie tworzą Observation oraz nie kończą aktywnej Observation. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 4 | `RuntimeService` jest właścicielem lifecycle Observation. Restore jest jawną operacją startową wykonywaną przez entrypoint przed pierwszym `run_cycle()` danej instancji RuntimeService. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 5 | Restore nie może być ukryty w konstruktorze RuntimeService i nie może być automatycznie wykonywany na początku każdego `run_cycle()`. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 6 | Pierwsza przyszła integracja Runtime z trwałością ma ograniczony zakres: poprawny kandydat ma przejść przez warstwę Observation przed Market Hunterem, lecz ta integracja nie definiuje jeszcze żadnego nowego filtra, progu, triggera, `UNKNOWN`, `CHANGED`, `NOT_TRIGGERED` ani `TRIGGERED`. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 7 | W pierwszej integracji wynik zapisu Readingu nie może samodzielnie zmienić obecnej reguły przekazywania kandydatów do Market Huntera lub MasterEngine. Kontrakt Market Hunter → MasterEngine i sposób przekazywania OHLCV nadal pozostają otwartymi decyzjami właściciela. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 8 | Dopiero po niezależnej weryfikacji tej ograniczonej integracji właściciel podejmie decyzję, jak porównanie Observation wpływa na Market Huntera i na możliwość przekazania instrumentu do MasterEngine. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+| 9 | `CHANGED` nie jest równoznaczne z `TRIGGERED`. | Zatwierdzone architektonicznie — ograniczona implementacja Runtime → Observation utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` i funkcjonalnie zweryfikowana 10.08.2026 |
+
+### 12.1 Podsumowanie stanu
+
+- Decyzje są zatwierdzone architektonicznie.
+- Ograniczona implementacja Runtime → Observation została utrwalona lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` o komunikacie `feat(runtime): persist observations before hunter` i funkcjonalnie zweryfikowana przez niezależną weryfikację właściciela 10.08.2026.
+- Pierwszy commit kodu zawiera dokładnie trzy pliki: `application/runtime.py`, `application/entrypoint.py`, `tests/test_runtime_observation_integration.py`.
+- Nie zmieniono kontraktu Market Hunter → MasterEngine.
+
+---
+
+## 13. BLOKADA KOREKTY RUNTIME → OBSERVATION I ZATWIERDZONY PLAN
+
+Data: 09.08.2026 | Status: **Wykonane i zweryfikowane 10.08.2026**
+
+### 13.A Historyczny stan bieżący
+
+- Cline wykrył, że dotychczasowa persistencja Readingu została umieszczona po `hunter_engine.scan(candidates)`, a więc nie spełnia zatwierdzonej kolejności `Scanner → Observation → Hunter → MasterEngine`.
+- Cline wykrył, że `application/entrypoint.py` nie zawierał na dysku jawnego wywołania `runtime.restore_active_observations()` między `build_runtime_service()` i `runtime.run_cycle()`.
+- Dedykowany test kontraktu kolejności nie osiągnął GREEN: raport Cline wskazał `1 FAILED, 21 passed`.
+- Raport Cline równocześnie podał pełną regresję `1590 passed`, co jest niespójne z porażką testu należącego do tej samej kolekcji. Wynik nie jest akceptowany ani zweryfikowany przez właściciela.
+- Bieżące zmiany Runtime i testu pozostają zamrożone, niezatwierdzone i nie mogą być commitowane.
+
+### 13.B Cztery zatwierdzone kroki korekty — WYKONANE
+
+1. ✅ **Test kolejności** — wykonany. Test używa analizy AST rzeczywistych wywołań w `RuntimeService.run_cycle()`, dowodząc kolejności `persist Observation → hunter_engine.scan(candidates)`.
+
+2. ✅ **Weryfikacja stanu Git i entrypointu** — wykonana. Potwierdzono faktyczny stan Git oraz faktyczną zawartość `application/entrypoint.py`. Produkcyjna kolejność startupu: `build_runtime_service() → runtime.restore_active_observations() → runtime.run_cycle()`.
+
+3. ✅ **Testy SOURCE_ERROR i timeout** — wykonane. Używają wyłącznie dopuszczalnego test double granicy Yahoo / ScanProvider. Dowodzą, że nie powstaje Reading ani Observation i że ACTIVE Observation nie zostaje zmieniona. Nie zaprojektowano nowej polityki obsługi błędów.
+
+4. ✅ **Kryteria funkcjonalnej weryfikacji spełnione** — 0 failed w dedykowanym pliku testowym; spójny wynik pełnej regresji (1600 passed, 41 subtests passed); pełny niezależny blok PowerShell wykonany przez właściciela 10.08.2026; osobny audyt Git potwierdzony.
+
+Repozytorium nadal NIE GREEN, ponieważ working tree nie jest czysty.
+
+### 13.C Zakres — zrealizowany
+
+- wyłącznie `application/runtime.py`, `application/entrypoint.py` i istniejący `tests/test_runtime_observation_integration.py`;
+- bez zmian Kanonu, modeli, repozytoriów trwałości, Market Huntera, MasterEngine, K6A, AI, Tavily, Telegrama, triggerów i selekcji;
+- pierwszy ograniczony lokalny commit kodu wykonany: `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` (`feat(runtime): persist observations before hunter`); weryfikacja zakończona pomyślnie.
+
+---
+
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026
 Data aktualizacji: 09.08.2026
-Status: Decyzje właściciela (pkt 1–6 zadania) zatwierdzone i zapisane w Kanonie (§12) oraz Checkpoincie (§8) 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Repozytorium nie jest GREEN. Sekcja §11 zaktualizowana 09.08.2026.
+Status: Decyzje właściciela (pkt 1–6 zadania) zatwierdzone i zapisane w Kanonie (§12) oraz Checkpoincie (§8) 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Granica RuntimeService → trwałość (§12) zatwierdzona 09.08.2026. Repozytorium nie jest GREEN. Sekcja §11 zaktualizowana 09.08.2026. Sekcja §13 — blokada korekty Runtime → Observation i zatwierdzony plan — dodana 09.08.2026.
 
 Checkpoint odzwierciedla zatwierdzone decyzje właściciela i stan projektu na dzień aktualizacji.

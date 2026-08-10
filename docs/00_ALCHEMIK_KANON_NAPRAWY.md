@@ -419,11 +419,54 @@ Następujące zasady zostały zatwierdzone przez właściciela 08.08.2026 po kor
 
 ---
 
+## 14. ZATWIERDZONA GRANICA RUNTIMESERVICE → INSTRUMENTOBSERVATION
+
+Następujące zasady zostały zatwierdzone przez właściciela 09.08.2026 i przechodzą z otwartych decyzji do obowiązującego kanonu architektonicznego.
+
+**Stan implementacji (10.08.2026):**
+
+- Kod i test integracyjny zostały utrwalone lokalnie w commicie `fb32064795a28c28f3acb8fd1e400b2a325f9cfb` o komunikacie `feat(runtime): persist observations before hunter`.
+- Ograniczona implementacja Runtime → Observation została funkcjonalnie potwierdzona przez niezależną weryfikację właściciela z 10.08.2026.
+- Kontrakt Market Hunter → MasterEngine pozostaje poza zakresem tej integracji i nie został zmieniony.
+- Repozytorium po pierwszym commicie kodu nadal nie jest GREEN — dokumentacja i pliki K6A pozostają niecommitowane.
+
+### 14.1 Jeden Reading z najnowszego MarketData
+
+1. Jeden poprawny kandydat rynku może utworzyć jeden `InstrumentReading` wyłącznie z najnowszego dostępnego `MarketData`, określonego przez największy źródłowy `market_data_timestamp`.
+
+### 14.2 Historyczny kontekst OHLCV
+
+2. Pełna lista OHLCV pobrana przez Yahoo Finance, w tym kontekst historyczny do 52 tygodni, pozostaje kontekstem analitycznym. Nie jest automatycznie zamieniana na wiele nowych Readingów podczas każdego skanu i nie jest przenoszona przez `HunterResult`.
+
+### 14.3 NO_DATA, SOURCE_ERROR i timeout
+
+3. `NO_DATA`, `SOURCE_ERROR` i timeout nie tworzą `InstrumentReading`, nie tworzą Observation oraz nie kończą aktywnej Observation.
+
+### 14.4 Własność lifecycle i jawny restore
+
+4. `RuntimeService` jest właścicielem lifecycle Observation. Restore jest jawną operacją startową wykonywaną przez entrypoint przed pierwszym `run_cycle()` danej instancji RuntimeService.
+
+5. Restore nie może być ukryty w konstruktorze RuntimeService i nie może być automatycznie wykonywany na początku każdego `run_cycle()`.
+
+### 14.5 Pierwsza integracja — ograniczony zakres
+
+6. Pierwsza przyszła integracja Runtime z trwałością ma ograniczony zakres: poprawny kandydat ma przejść przez warstwę Observation przed Market Hunterem, lecz ta integracja nie definiuje jeszcze żadnego nowego filtra, progu, triggera, `UNKNOWN`, `CHANGED`, `NOT_TRIGGERED` ani `TRIGGERED`.
+
+7. W pierwszej integracji wynik zapisu Readingu nie może samodzielnie zmienić obecnej reguły przekazywania kandydatów do Market Huntera lub MasterEngine. Kontrakt Market Hunter → MasterEngine i sposób przekazywania OHLCV nadal pozostają otwartymi decyzjami właściciela.
+
+8. Dopiero po niezależnej weryfikacji tej ograniczonej integracji właściciel podejmie decyzję, jak porównanie Observation wpływa na Market Huntera i na możliwość przekazania instrumentu do MasterEngine.
+
+### 14.6 CHANGED ≠ TRIGGERED
+
+9. `CHANGED` nie jest równoznaczne z `TRIGGERED`.
+
+---
+
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026
-Data aktualizacji: 08.08.2026
-Wersja: 1.2
-Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12) oraz zabezpieczenia trwałości (§13) zatwierdzone przez właściciela 08.08.2026. Pozostałe treści pozostają proponowane.
+Data aktualizacji: 09.08.2026
+Wersja: 1.3
+Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12), zabezpieczenia trwałości (§13) oraz granicy RuntimeService → InstrumentObservation (§14) zatwierdzone przez właściciela 08–09.08.2026. Pozostałe treści pozostają proponowane.
 
-Kanon zmienia się wyłącznie po jawnej decyzji właściciela. Zatwierdzone zasady §12 i §13 są obowiązujące; pozostałe sekcje pozostają proponowane do czasu akceptacji właściciela.
+Kanon zmienia się wyłącznie po jawnej decyzji właściciela. Zatwierdzone zasady §12, §13 i §14 są obowiązujące; pozostałe sekcje pozostają proponowane do czasu akceptacji właściciela.
