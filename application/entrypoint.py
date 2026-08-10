@@ -138,6 +138,7 @@ def main():
     logger.info("ALCHEMIK RuntimeService starting")
 
     runtime = build_runtime_service()
+    runtime.restore_active_observations()
     report = runtime.run_cycle()
 
     logger.info("Cycle complete: %d candidates, %d success, %d errors",

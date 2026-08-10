@@ -1,9 +1,12 @@
 # Runtime module for ALCHEMIK
 import logging
+import uuid
 from typing import List, Optional, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from data.models import MarketEvent, InstrumentType, MarketData
 from data.models.final_analysis_result import FinalAnalysisResult
+from data.models.instrument_reading import InstrumentReading
+from data.models.instrument_observation import InstrumentObservation
 from .models import CycleReport, CandidateError
 from .market_scanner import MarketScanner
 from .history_repository import HistoryRepository
@@ -14,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeService:
-    def __init__(self, hunter_engine, master_engine, history_repository: HistoryRepository, *, 
-                 market_scanner: Optional[MarketScanner] = None, 
+    def __init__(self, hunter_engine, master_engine, history_repository: HistoryRepository, *,
+                 market_scanner: Optional[MarketScanner] = None,
                  deduplicator=None,
                  alert_builder=None,
                  alert_dispatcher=None,
@@ -51,13 +54,88 @@ class RuntimeService:
             metadata=self._instrument_metadata,
         )
 
+    # ------------------------------------------------------------------
+    # Ograniczona integracja Runtime → Observation (Kanon §14)
+    # ------------------------------------------------------------------
+
+    def restore_active_observations(self) -> list:
+        """
+        Jawne odtworzenie ACTIVE Observation wraz z ostatnim Readingiem.
+
+        Wywoływane przez entrypoint przed pierwszym run_cycle().
+        Deleguje do HistoryRepository.restore_active_observations().
+        """
+        if not hasattr(self.history_repository, 'restore_active_observations'):
+            return []
+        return self.history_repository.restore_active_observations()
+
+    def _persist_observation_and_reading(
+        self, instrument_id: str, ohlcv_data: List[MarketData]
+    ) -> None:
+        """
+        Utrwala Observation i Reading przed przekazaniem do Market Huntera.
+
+        Reguły (Kanon §14):
+        - Wybiera jeden MarketData o największym market_data_timestamp
+        - Tworzy jeden InstrumentReading z tego MarketData
+        - Ładuje istniejącą ACTIVE Observation lub tworzy nową
+        - Wywołuje save_reading(observation, reading) atomowo
+        - Nie filtruje, nie triggeruje, nie zmienia dalszego przepływu
+        - NO_DATA / pusta lista nie tworzy Observation
+        """
+        if not ohlcv_data:
+            return
+
+        if not hasattr(self.history_repository, 'save_reading'):
+            return
+
+        # Wybierz najnowszy MarketData
+        latest = max(ohlcv_data, key=lambda md: md.timestamp)
+
+        # Określ data_completeness
+        has_ohlc = (
+            latest.open is not None
+            and latest.high is not None
+            and latest.low is not None
+            and latest.close is not None
+        )
+        completeness = "COMPLETE" if has_ohlc else "PARTIAL"
+
+        # Załaduj istniejącą ACTIVE Observation lub utwórz nową
+        observation = None
+        if hasattr(self.history_repository, 'load_observation'):
+            observation = self.history_repository.load_observation(instrument_id)
+
+        if observation is None:
+            observation = InstrumentObservation(
+                observation_id=str(uuid.uuid4()),
+                instrument_id=instrument_id,
+            )
+
+        # Zbuduj InstrumentReading
+        reading = InstrumentReading(
+            reading_id=str(uuid.uuid4()),
+            observation_id=observation.observation_id,
+            instrument_id=instrument_id,
+            market_data_timestamp=latest.timestamp,
+            scan_timestamp=datetime.now(timezone.utc),
+            open=latest.open,
+            high=latest.high,
+            low=latest.low,
+            close=latest.close,
+            volume=latest.volume,
+            data_completeness=completeness,
+        )
+
+        self.history_repository.save_reading(observation, reading)
+
     def run_cycle(self, input_data: Optional[dict] = None) -> CycleReport:
         """
         Execute one cycle of the ALCHEMIK runtime.
-        
+
         Args:
             input_data: Optional input data for the Hunter Engine.
-        
+
         Returns:
             CycleReport: A report of the cycle execution.
         """
@@ -65,7 +143,7 @@ class RuntimeService:
         errors = []
         results = []
         all_detected_events: List[MarketEvent] = []
-        
+
         try:
             # Step 1: Get candidates from MarketScanner or Hunter Engine
             ohlcv_map: Dict[str, List[MarketData]] = {}
@@ -78,12 +156,24 @@ class RuntimeService:
                         data = candidate.get('data')
                         if sym and isinstance(data, list):
                             ohlcv_map[sym] = data
+
+                # --- Ograniczona integracja: utrwal Observation przed Market Hunterem ---
+                # Iteruj po surowych kandydatach MarketScanner, nie po
+                # hunter_result.opportunities. Persistencja musi zajść
+                # strukturalnie przed hunter_engine.scan(candidates).
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        sym = candidate.get('symbol')
+                        data = ohlcv_map.get(sym)
+                        if sym and data is not None:
+                            self._persist_observation_and_reading(sym, data)
+
                 hunter_result = self.hunter_engine.scan(candidates)
             else:
                 hunter_result = self.hunter_engine.scan(input_data or {})
 
             candidates_count = len(hunter_result.opportunities)
-            
+
             # Step 2: Process each candidate through Master Engine
             success_count = 0
             for candidate in hunter_result.opportunities:
@@ -101,12 +191,12 @@ class RuntimeService:
                         continue
                 else:
                     continue  # Skip deduplication if no deduplicator is provided
-                
+
                 # Resolve instrument metadata for this candidate
                 market, instrument_type = self._get_instrument_metadata(
                     candidate.instrument_id
                 )
-                
+
                 # Look up OHLCV data for this candidate from the scanner results
                 candidate_ohlcv = ohlcv_map.get(candidate.instrument_id)
 
@@ -143,10 +233,6 @@ class RuntimeService:
                             )
 
                     # Process alerts if alert components are available and no MasterEngine errors.
-                    # Alerts are only built for MarketEvents with quality_level other than IGNORE/LOW.
-                    # There is NO fallback without MarketEvent — documentation
-                    # (ETAP_7_PLAN.md §7.5, Kontrakt_Zdarzen_Rynkowych.md ETAP 11)
-                    # requires MarketEvent + FinalAnalysisResult as input.
                     if not isinstance(result, Exception) and self.alert_builder and self.alert_dispatcher and detected_events:
                         for ev in detected_events:
                             ql_value = None
@@ -180,7 +266,7 @@ class RuntimeService:
                         message=str(e)
                     ))
                     continue
-                
+
                 # Mark as processed if deduplicator is provided
                 if self.deduplicator is not None and not isinstance(result, Exception):
                     try:
@@ -216,7 +302,7 @@ class RuntimeService:
             results=results,
             errors=errors
         )
-        
+
         cycle_id = str(start_time.timestamp())
         try:
             self.history_repository.save_cycle(cycle_id, {
@@ -295,5 +381,5 @@ class RuntimeService:
                     stage="OutcomeComputer.compute_pending_horizons",
                     message=str(e),
                 ))
-            
+
         return report
