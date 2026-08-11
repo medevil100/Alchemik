@@ -13,13 +13,39 @@ Przed wykonaniem jakiejkolwiek zmiany:
 7. Nie wykonuj pełnego skanowania repozytorium bez rzeczywistej potrzeby.
 8. W pierwszej kolejności wykorzystuj istniejące modele danych, kontrakty, interfejsy i dokumentację.
 9. Nie zgaduj brakujących założeń. Jeżeli dokumentacja czegoś nie definiuje, przerwij implementację tego elementu i opisz problem w raporcie końcowym.
-10. Każde zadanie zakończ:
-   - uruchomieniem odpowiednich testów,
-   - uruchomieniem pełnego zestawu testów projektu,
-   - przygotowaniem raportu końcowego,
-   - potwierdzeniem gotowości do osobnego commita Git.
+10. Zakończenie zadania zależy od jego rodzaju:
+
+* zadanie implementacyjne: uruchom wyłącznie testy wskazane w zatwierdzonym zakresie; pełną regresję uruchamiaj tylko, gdy wymaga tego polecenie lub właściciel; przygotuj raport końcowy;
+* zadanie audytowe, dokumentacyjne lub wyłącznie Git: nie uruchamiaj testów, chyba że polecenie wyraźnie tego wymaga; raport musi zawierać zdanie „Testów nie uruchamiano.”;
+* commit i `git push` są osobnymi zadaniami i wymagają każdorazowo jawnej zgody właściciela.
 11. Jeżeli do wykonania zadania nie jest potrzebny cały projekt, nie analizuj całego repozytorium. Korzystaj wyłącznie z plików bezpośrednio związanych z bieżącym zadaniem oraz ich zależności.
 12. Szanuj zamrożoną architekturę projektu. Wprowadzaj wyłącznie zmiany wymagane przez aktualne zadanie. Nie wykonuj dodatkowych refaktoryzacji ani zmian „przy okazji".
 13. Każdą decyzję implementacyjną opieraj na obowiązującej dokumentacji projektu. W przypadku sprzeczności dokumentacja ma pierwszeństwo przed własnymi założeniami.
 
 14. Dla projektu ALCHEMIK wszystkie polecenia Python, pip, pytest i narzędzia uruchamiane przez Python muszą używać interpretera: C:\alchemik\.venv\Scripts\python.exe. Zabronione jest używanie systemowego polecenia `python`, `pip` lub `pytest` bez pełnej ścieżki do projektowego interpretera.
+
+15. Przed każdą zmianą potwierdź warunek startowy Git wskazany w zadaniu. Jeżeli HEAD, staging, unstaged, untracked, interpreter albo lista plików różnią się od oczekiwanych, zatrzymaj zadanie bez zmian i przedstaw pełną różnicę.
+
+16. Staging rozstrzygaj wyłącznie na podstawie łącznego wyniku:
+
+* `git diff --cached --raw`;
+* `git diff --cached --name-status`;
+* `git diff --cached --stat`;
+* `git diff --cached --quiet` wraz z kodem wyjścia.
+  Nie wolno uznać pliku za staged wyłącznie na podstawie skróconego odczytu `git status`. Nie wykonuj automatycznie `git restore --staged`, `git reset` ani innych działań naprawczych.
+
+17. W zadaniu dokumentacyjnym nie twórz nowych sekcji, podsekcji, numeracji ani nazw decyzji, chyba że właściciel wyraźnie zatwierdził ich dokładne brzmienie. Nie usuwaj ani nie przepisuj historycznych snapshotów, wcześniejszych commitów ani zatwierdzonych sekcji poza literalnie wskazanym zakresem.
+
+18. Przed stwierdzeniem zgodności, gotowości do commita lub braku naruszeń pokaż pełny unified diff każdego zmodyfikowanego pliku objętego bieżącym zadaniem albo proponowanym commitem. Statystyka, numstat, streszczenie hunka ani tabela skrótów nie zastępują pełnego diffu. Każdy hunk przypisz do konkretnego zatwierdzonego faktu albo oznacz jako poza zakresem.
+
+19. Każde twierdzenie w raporcie musi mieć bezpośredni dowód w odczytanym kodzie, teście, dokumencie lub wyniku Git. Sprzecznych dowodów nie wolno rozstrzygać założeniem — należy je nazwać i zatrzymać zadanie bez dalszego rozszerzania zmian.
+
+20. W testach integracyjnych każdy mock musi być wskazany literalnie wraz z zastępowanym komponentem. Mocki są dozwolone wyłącznie na granicach systemu: Yahoo Finance, Tavily i dostawca AI. Komponentów wewnętrznych ALCHEMIKA nie wolno zastępować mockami.
+
+21. Nie deklaruj GREEN, zamknięcia etapu ani gotowości do `git push` na podstawie samych testów lub samego czystego Git. Wymagane są równocześnie: zgodność zakresu, niezależna weryfikacja właściciela, czysty Git oraz końcowy audyt odczytowy. `git push` wykonuj wyłącznie po osobnym, jawnym poleceniu właściciela.
+
+22. Nie wykonuj `git add .`, `git add -A`, `git commit -a`, `git push`, `git reset`, `git restore`, `git checkout`, `git clean`, `git stash`, `git merge` ani `git rebase`, chyba że dokładna operacja i dokładny zakres zostały jawnie zatwierdzone przez właściciela.
+
+23. Cline może użyć `powershell -NoProfile -Command` wyłącznie jako technicznego uruchamiacza z domyślnej powłoki `cmd.exe`. Każde właściwe polecenie projektu wykonywane wewnątrz PowerShell musi rozpoczynać się od:
+    `Set-Location -LiteralPath 'C:\alchemik';`
+    Wszystkie narzędzia uruchamiane przez Python stosują wyłącznie interpreter wskazany w regule 14.
