@@ -142,7 +142,7 @@ EventOutcome i SessionOutcome **nie zastępują obserwacji ani historii instrume
 HunterResult jest **wyłącznie wynikiem końcowej kwalifikacji** i nie może przenosić:
 
 - Surowych danych OHLCV.
-- `raw_input` jako trwałego elementu architektury — `raw_input` jest niezatwierdzonym eksperymentalnym mechanizmem obecnym w zamrożonych zmianach. Nie stanowi architektury docelowej, nie może być używany jako wzorzec kontraktu i wymaga osobnej decyzji właściciela.
+- `raw_input` jako trwałego elementu architektury — `raw_input` był niezatwierdzonym eksperymentalnym mechanizmem obecnym we wcześniejszych zamrożonych zmianach. Został usunięty z `HunterResult` i `HunterEngine`. Usunięcie utrwalono lokalnie w commicie `ee4a9185159970a66bd01c925e843edf5d0f3c6f` o komunikacie `fix(hunter): remove raw_input from HunterResult`. `HunterResult` nie przenosi surowego OHLCV; OHLCV nie jest przekazywane przez `HunterResult`.
 - Stanu obserwacji (InstrumentObservation).
 
 ---

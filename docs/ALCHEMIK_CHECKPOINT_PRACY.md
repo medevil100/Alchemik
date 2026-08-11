@@ -3,8 +3,8 @@
 ## KRÓTKI, FAKTYCZNY STAN PROJEKTU NA DZIEŃ WYKONANIA ZADANIA
 
 Data utworzenia: 08.08.2026
-Data aktualizacji: 09.08.2026
-Status: Zatwierdzone decyzje właściciela (pkt 1–6 zadania) zapisane w Kanonie i Checkpoincie 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Repozytorium nie jest GREEN.
+Data aktualizacji: 10.08.2026
+Status: Zatwierdzone decyzje właściciela (pkt 1–6 zadania) zapisane w Kanonie i Checkpoincie 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Commit K6A usunięcia `raw_input` wykonany 10.08.2026. Repozytorium nie jest deklarowane jako GREEN w tym zadaniu dokumentacyjnym.
 
 ---
 
@@ -12,9 +12,9 @@ Status: Zatwierdzone decyzje właściciela (pkt 1–6 zadania) zapisane w Kanoni
 
 | Obszar | Stan | Dowód lub źródło | Najbliższa dozwolona czynność |
 |--------|------|-----------------|------------------------------|
-| Proponowany kanon (`docs/00_ALCHEMIK_KANON_NAPRAWY.md`) | częściowo zatwierdzony | Dokument zaktualizowany 08.08.2026 | Implementacja po decyzjach właściciela |
-| Checkpoint (`docs/ALCHEMIK_CHECKPOINT_PRACY.md`) | zatwierdzony | Dokument zaktualizowany 08.08.2026 | — |
-| Cztery zmiany Market Huntera | zamrożone | `git status --porcelain=v1`: ` M` we wszystkich czterech plikach; staging pusty | Brak — zamrożone do decyzji właściciela |
+| Proponowany kanon (`docs/00_ALCHEMIK_KANON_NAPRAWY.md`) | częściowo zatwierdzony | Dokument zaktualizowany 10.08.2026 | Implementacja po decyzjach właściciela |
+| Checkpoint (`docs/ALCHEMIK_CHECKPOINT_PRACY.md`) | zatwierdzony | Dokument zaktualizowany 10.08.2026 | — |
+| Cztery zmiany Market Huntera | commitowane | Lokalny commit `ee4a918` (`fix(hunter): remove raw_input from HunterResult`), 4 pliki: `data/models/hunter_result.py`, `engines/hunter/engine.py`, `tests/test_hunter_engine.py`, `tests/test_runtime.py`; po commicie Git czysty (staging pusty, brak unstaged i untracked); `git push` nie został wykonany | — |
 | Automatyczne uniwersum groszówek GPW i USA | niewdrożone | `docs/00_ALCHEMIK_KANON_NAPRAWY.md` §10 pkt 1 | Osobne ustalenie definicji uniwersum przez właściciela |
 | Trwałość i restore InstrumentReading / InstrumentObservation | niewdrożone | `docs/00_ALCHEMIK_KANON_NAPRAWY.md` §4.3, §4.4 — oznaczone jako docelowe, niewdrożone | Projekt kontraktu trwałości po akceptacji kanonu |
 | Porównanie odczytów i Market Hunter oparty na obserwacji | niewdrożone | `docs/00_ALCHEMIK_KANON_NAPRAWY.md` §3, §5.1 — zdefiniowane jako architektura docelowa | Implementacja po zatwierdzeniu kontraktów |
@@ -23,8 +23,8 @@ Status: Zatwierdzone decyzje właściciela (pkt 1–6 zadania) zapisane w Kanoni
 | Rzeczywiste GPT-4.0, Tavily i Telegram | niepotwierdzone | Adapter Tavily i wcześniejsza integracja istnieją; nie jest potwierdzone produkcyjne wpięcie Tavily oraz rzeczywiste wykonanie pełnej ścieżki end-to-end. Rzeczywiste GPT-4.0 pozostaje nieudowodnione (AI jest placeholderem). Rzeczywiste dostarczenie Telegramem pozostaje nieudowodnione | Weryfikacja produkcyjna po decyzji właściciela |
 | Baseline pierwszego odczytu | zatwierdzone | `docs/00_ALCHEMIK_KANON_NAPRAWY.md` §4.1, §12 — pierwszy poprawny odczyt (w tym PARTIAL) tworzy trwały baseline nowej InstrumentObservation | Decyzja zatwierdzona 08.08.2026 — implementacja niewdrożona |
 | Zasada AI | proponowane | `docs/00_ALCHEMIK_KANON_NAPRAWY.md` §7.2 — AI uruchamiana dla każdego wykrytego zdarzenia spełniającego zatwierdzone kryteria, bez wpisywania progów liczbowych | Decyzja właściciela o kryteriach |
-| Aktualny wynik testów | zweryfikowane | 1530/1530 passed, niezależnie potwierdzone przez właściciela w PowerShell 08.08.2026 | — |
-| Stan repozytorium | nie GREEN | 4 pliki unstaged + 2 pliki untracked | — |
+| Aktualny wynik testów | zweryfikowane | 1600 tests collected, 1600 passed, 41 subtests passed, niezależnie potwierdzone przez właściciela w PowerShell 10.08.2026 | — |
+| Stan repozytorium | czysty po commicie K6A | `git status --porcelain=v1` pusty; staging pusty; brak untracked; `git push` nie wykonany | — |
 
 ---
 
@@ -38,8 +38,8 @@ Status: Zatwierdzone decyzje właściciela (pkt 1–6 zadania) zapisane w Kanoni
 
 | Dokument | Status |
 |----------|--------|
-| `docs/00_ALCHEMIK_KANON_NAPRAWY.md` | **Częściowo zatwierdzony** — §12 zatwierdzony przez właściciela; zaktualizowany 08.08.2026 po decyzjach właściciela (pkt 1–6 zadania). Pozostałe sekcje pozostają proponowane. |
-| `docs/ALCHEMIK_CHECKPOINT_PRACY.md` | **Zatwierdzony** — niniejszy dokument zaktualizowany 08.08.2026 po decyzjach właściciela. |
+| `docs/00_ALCHEMIK_KANON_NAPRAWY.md` | **Częściowo zatwierdzony** — §12 zatwierdzony przez właściciela; §4.7 zaktualizowany 10.08.2026 po commicie K6A. Pozostałe sekcje pozostają proponowane. |
+| `docs/ALCHEMIK_CHECKPOINT_PRACY.md` | **Zatwierdzony** — niniejszy dokument zaktualizowany 10.08.2026 po commicie K6A. |
 | Uwaga | Oba dokumenty zostały zaktualizowane wyłącznie na podstawie jawnych decyzji właściciela. Jedyną osobą uprawnioną do dalszych zmian jest właściciel. |
 
 ---
@@ -90,42 +90,36 @@ Branch: master
 
 | Atrybut | Wartość |
 |---------|---------|
-| **Kolekcja** | 1530 tests collected |
-| **Regresja** | 1530 passed |
+| **Kolekcja** | 1600 tests collected |
+| **Regresja** | 1600 passed, 41 subtests passed |
 | **Skipped** | 0 |
 | **Failed/Error** | 0 |
-| **Data weryfikacji** | 08.08.2026 |
+| **Data weryfikacji** | 10.08.2026 |
 | **Źródło** | Niezależnie potwierdzone przez właściciela w PowerShell |
+| **Uwaga** | Testów nie uruchamiano w ramach zadania dokumentacyjnego |
 
 ---
 
 ## 5. ROZRÓŻNIENIE WYNIKU FUNKCYJNEGO TESTÓW I STANU GREEN
 
-| Pojęcie | Znaczenie | Stan na 08.08.2026 |
+| Pojęcie | Znaczenie | Stan na 10.08.2026 |
 |---------|----------|-------------------|
-| **Funkcjonalny wynik testów** | Wszystkie testy przechodzą (PASSED) — 1530/1530 bez FAILED | ✅ 1530 passed |
-| **Stan GREEN repozytorium** | Czysty Git (brak niezatwierdzonych zmian ORAZ brak untracked) ORAZ wszystkie testy przechodzą | ❌ NIE GREEN — 4 unstaged + 2 untracked |
+| **Funkcjonalny wynik testów** | Wszystkie testy przechodzą (PASSED) — 1600/1600, 41 subtests | ✅ 1600 passed |
+| **Stan GREEN repozytorium** | Czysty Git (brak niezatwierdzonych zmian ORAZ brak untracked) ORAZ wszystkie testy przechodzą | Nie deklarowany w tym zadaniu dokumentacyjnym |
 
-Repozytorium **nie jest GREEN**.
+Formalny GREEN i decyzja o push nie są deklarowane w tym zadaniu dokumentacyjnym.
 
 ---
 
 ## 6. ZAMROŻONY OBSZAR
 
-### 6.1 Stan zmian według Git (stan rzeczywisty na 08.08.2026)
+### 6.1 Stan zmian według Git (stan rzeczywisty na 10.08.2026 po commicie K6A)
 
-| Plik | Status w Git | Uwagi |
-|------|-------------|-------|
-| `data/models/hunter_result.py` | Unstaged (` M` — tylko working tree) | Modyfikacja Kroku 6A — zamrożona |
-| `engines/hunter/engine.py` | Unstaged (` M` — tylko working tree) | Modyfikacja Kroku 6A — zamrożona |
-| `tests/test_hunter_engine.py` | Unstaged (` M` — tylko working tree) | Modyfikacja Kroku 6A — zamrożona |
-| `tests/test_runtime.py` | Unstaged (` M` — tylko working tree) | Modyfikacja Kroku 6A — zamrożona |
-
-Staging area jest pusta — wszystkie cztery zmiany są wyłącznie w working tree.
+Cztery pliki K6A zostały commitowane w `ee4a918`. Repozytorium jest czyste — brak zmian unstaged, staged lub untracked.
 
 ### 6.2 Zasada
 
-Wszystkie cztery pliki są **zamrożone do czasu osobnej decyzji właściciela**. Nie wolno ich modyfikować, scalać, przywracać (`git restore`) ani usuwać (`git reset`). Stan rzeczywisty został odczytany z Git — jeżeli przyszłe polecenia `git status` wykażą inny stan tych plików, nie przypisuj mu pochodzenia bez dowodu (audyt Git).
+Commit `ee4a918` jest ostatecznym stanem K6A. Nie wolno modyfikować, rozszerzać ani scalać zmian K6A bez jawnej decyzji właściciela.
 
 ---
 
@@ -142,10 +136,10 @@ Po zatwierdzeniu decyzji dotyczących granicy `InstrumentReading → InstrumentO
    - InstrumentObservation → Market Hunter
 
 4. **Brak zgody na:**
-   - Poprawianie zamrożonych zmian (Krok 6A).
+   - Poprawianie zmian K6A w commicie `ee4a918`.
    - Tworzenie nowych modeli bez odrębnej decyzji właściciela.
    - Zmianę istniejących modeli objętych zakazami zatwierdzonego kanonu.
-   - Scalanie (`git merge`, `git rebase`) zamrożonych zmian.
+   - Scalanie (`git merge`, `git rebase`) zmian K6A.
 
 ---
 
@@ -280,7 +274,7 @@ Zatwierdzony kanon (`docs/00_ALCHEMIK_KANON_NAPRAWY.md`) zmienia się **wyłącz
 
 ## 11. STAN BIEŻĄCEJ SESJI I PLAN NASTĘPNEJ SESJI
 
-Data: 09.08.2026
+Data: 10.08.2026
 
 ### 11.A Co zostało wykonane i pozostaje do zachowania
 
@@ -291,11 +285,10 @@ Data: 09.08.2026
   brak rekordu po rollbacku kolizji → techniczny `sqlite3.IntegrityError`.
 - Migracja testów 40, 41 i 45 została zatwierdzona przez właściciela i jest częścią aktualnego kontraktu.
 - Trwałość Observation/Reading została zaimplementowana w `HistoryRepository` i `SQLiteHistoryRepository`, lecz integracja z RuntimeService pozostaje niewdrożona.
-- Zamrożone pozostają:
-  `data/models/hunter_result.py`,
-  `engines/hunter/engine.py`,
-  `tests/test_hunter_engine.py`,
-  `tests/test_runtime.py`.
+- Commit K6A wykonany: `ee4a918` (`fix(hunter): remove raw_input from HunterResult`).
+  `raw_input` został usunięty z `HunterResult` i `HunterEngine`.
+  `HunterResult` nie przenosi surowego OHLCV.
+  Po commicie Git jest czysty.
 
 ### 11.B Status wyników
 
@@ -317,7 +310,7 @@ Data: 09.08.2026
 - Stan Git identyczny przed i po testach.
 - `git diff --check` oraz `git diff --cached --check` czyste.
 - Wynik funkcjonalny jest niezależnie potwierdzony przez właściciela.
-- Repozytorium nadal nie jest GREEN, ponieważ Git nie jest czysty.
+- Stan Git dla opisanego etapu pozostaje zapisany w §11.C jako historyczny snapshot.
 
 ### 11.C Faktyczny stan repozytorium — stan bezpośrednio po pierwszym commicie kodu, przed commitem dokumentacyjnym (10.08.2026)
 
@@ -422,7 +415,7 @@ Repozytorium nadal NIE GREEN, ponieważ working tree nie jest czysty.
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026
-Data aktualizacji: 09.08.2026
-Status: Decyzje właściciela (pkt 1–6 zadania) zatwierdzone i zapisane w Kanonie (§12) oraz Checkpoincie (§8) 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Granica RuntimeService → trwałość (§12) zatwierdzona 09.08.2026. Repozytorium nie jest GREEN. Sekcja §11 zaktualizowana 09.08.2026. Sekcja §13 — blokada korekty Runtime → Observation i zatwierdzony plan — dodana 09.08.2026.
+Data aktualizacji: 10.08.2026
+Status: Decyzje właściciela (pkt 1–6 zadania) zatwierdzone i zapisane w Kanonie (§12) oraz Checkpoincie (§8) 08.08.2026. Commit trwałości i dokumentacji wykonany 09.08.2026. Granica RuntimeService → trwałość (§12) zatwierdzona 09.08.2026. Commit K6A usunięcia `raw_input` wykonany 10.08.2026. Repozytorium nie jest deklarowane jako GREEN w tym zadaniu dokumentacyjnym. Sekcja §11 zaktualizowana 10.08.2026. Sekcja §13 — blokada korekty Runtime → Observation i zatwierdzony plan — dodana 09.08.2026.
 
 Checkpoint odzwierciedla zatwierdzone decyzje właściciela i stan projektu na dzień aktualizacji.
