@@ -59,3 +59,6 @@ dashboard/tsc_output.txt
 # OS
 Thumbs.db
 .DS_Store
+
+# Streamlit secrets (local, never commit)
+/.streamlit/secrets.toml
