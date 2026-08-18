@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import logging
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -174,6 +175,74 @@ class SQLiteHistoryRepository:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_observation
             ON instrument_observations(instrument_id)
             WHERE state = 'ACTIVE';
+
+        CREATE TABLE IF NOT EXISTS universe_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            sequence INTEGER NOT NULL UNIQUE,
+            created_at TEXT,
+            total_records INTEGER NOT NULL DEFAULT 0,
+            unique_symbols INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS universe_instruments (
+            symbol TEXT PRIMARY KEY,
+            quote_type TEXT,
+            exchange TEXT,
+            market TEXT,
+            currency TEXT,
+            regular_market_price REAL,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            chart_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
+            candles_received INTEGER NOT NULL DEFAULT 0,
+            candles_valid INTEGER NOT NULL DEFAULT 0,
+            candles_rejected INTEGER NOT NULL DEFAULT 0,
+            rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            daily_status TEXT,
+            daily_candles_received INTEGER NOT NULL DEFAULT 0,
+            daily_candles_valid INTEGER NOT NULL DEFAULT 0,
+            daily_candles_rejected INTEGER NOT NULL DEFAULT 0,
+            daily_rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            intraday_status TEXT,
+            intraday_candles_received INTEGER NOT NULL DEFAULT 0,
+            intraday_candles_valid INTEGER NOT NULL DEFAULT 0,
+            intraday_candles_rejected INTEGER NOT NULL DEFAULT 0,
+            intraday_rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            baseline_status TEXT,
+            last_reading_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS universe_snapshot_members (
+            snapshot_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            present INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            chart_status TEXT NOT NULL DEFAULT 'NOT_STARTED',
+            candles_received INTEGER NOT NULL DEFAULT 0,
+            candles_valid INTEGER NOT NULL DEFAULT 0,
+            candles_rejected INTEGER NOT NULL DEFAULT 0,
+            rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            daily_status TEXT,
+            daily_candles_received INTEGER NOT NULL DEFAULT 0,
+            daily_candles_valid INTEGER NOT NULL DEFAULT 0,
+            daily_candles_rejected INTEGER NOT NULL DEFAULT 0,
+            daily_rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            intraday_status TEXT,
+            intraday_candles_received INTEGER NOT NULL DEFAULT 0,
+            intraday_candles_valid INTEGER NOT NULL DEFAULT 0,
+            intraday_candles_rejected INTEGER NOT NULL DEFAULT 0,
+            intraday_rejection_reasons_json TEXT NOT NULL DEFAULT '{}',
+            baseline_status TEXT,
+            last_reading_id TEXT,
+            PRIMARY KEY (snapshot_id, symbol),
+            FOREIGN KEY (snapshot_id) REFERENCES universe_snapshots(snapshot_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_universe_members_snapshot
+            ON universe_snapshot_members(snapshot_id);
     """
 
     SQL_WAL_PRAGMAS = """
@@ -218,11 +287,92 @@ class SQLiteHistoryRepository:
 
         # Run migration to add signal_timing column (idempotent)
         self._migrate_signal_timing()
+        self._migrate_universe_registry()
 
     def _column_exists(self, cursor, table: str, column: str) -> bool:
         """Check whether *column* already exists in *table*."""
         cursor.execute(f"PRAGMA table_info({table})")
         return any(row[1] == column for row in cursor.fetchall())
+
+    def _migrate_universe_registry(self) -> None:
+        """Idempotentna migracja rejestru uniwersum.
+
+        Dodaje sequence do universe_snapshots oraz status/first_seen_at/
+        last_seen_at do universe_snapshot_members. Dla starej bazy odtwarza
+        historyczny status memberów deterministycznie z chronologii snapshotów
+        (pierwszy -> NEW_IN_CURRENT_SCAN, kolejny -> ACTIVE, nieobecny ->
+        MISSING_IN_CURRENT_SCAN) bez używania universe_instruments.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            for col, ddl in (
+                ("status", "ALTER TABLE universe_snapshot_members ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'"),
+                ("first_seen_at", "ALTER TABLE universe_snapshot_members ADD COLUMN first_seen_at TEXT"),
+                ("last_seen_at", "ALTER TABLE universe_snapshot_members ADD COLUMN last_seen_at TEXT"),
+            ):
+                if not self._column_exists(cursor, "universe_snapshot_members", col):
+                    cursor.execute(ddl)
+            # Krok 4/8 — migracja daily/intraday (idempotentna)
+            for table in ("universe_instruments", "universe_snapshot_members"):
+                for col, ddl in (
+                    ("daily_status", f"ALTER TABLE {table} ADD COLUMN daily_status TEXT"),
+                    ("daily_candles_received", f"ALTER TABLE {table} ADD COLUMN daily_candles_received INTEGER NOT NULL DEFAULT 0"),
+                    ("daily_candles_valid", f"ALTER TABLE {table} ADD COLUMN daily_candles_valid INTEGER NOT NULL DEFAULT 0"),
+                    ("daily_candles_rejected", f"ALTER TABLE {table} ADD COLUMN daily_candles_rejected INTEGER NOT NULL DEFAULT 0"),
+                    ("daily_rejection_reasons_json", f"ALTER TABLE {table} ADD COLUMN daily_rejection_reasons_json TEXT NOT NULL DEFAULT '{{}}'"),
+                    ("intraday_status", f"ALTER TABLE {table} ADD COLUMN intraday_status TEXT"),
+                    ("intraday_candles_received", f"ALTER TABLE {table} ADD COLUMN intraday_candles_received INTEGER NOT NULL DEFAULT 0"),
+                    ("intraday_candles_valid", f"ALTER TABLE {table} ADD COLUMN intraday_candles_valid INTEGER NOT NULL DEFAULT 0"),
+                    ("intraday_candles_rejected", f"ALTER TABLE {table} ADD COLUMN intraday_candles_rejected INTEGER NOT NULL DEFAULT 0"),
+                    ("intraday_rejection_reasons_json", f"ALTER TABLE {table} ADD COLUMN intraday_rejection_reasons_json TEXT NOT NULL DEFAULT '{{}}'"),
+                ):
+                    if not self._column_exists(cursor, table, col):
+                        cursor.execute(ddl)
+            if not self._column_exists(cursor, "universe_snapshots", "sequence"):
+                cursor.execute("ALTER TABLE universe_snapshots ADD COLUMN sequence INTEGER")
+                cursor.execute(
+                    """UPDATE universe_snapshots
+                       SET sequence = (SELECT COUNT(*) FROM universe_snapshots s2
+                                       WHERE (s2.created_at, s2.snapshot_id) <=
+                                             (universe_snapshots.created_at, universe_snapshots.snapshot_id))"""
+                )
+            cursor.execute("SELECT COUNT(*) FROM universe_snapshot_members WHERE status != 'ACTIVE' AND status != 'NEW_IN_CURRENT_SCAN' AND status != 'MISSING_IN_CURRENT_SCAN'")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    """SELECT snapshot_id, symbol, present FROM universe_snapshot_members
+                       ORDER BY (SELECT COALESCE(sequence, 0) FROM universe_snapshots
+                                 WHERE universe_snapshots.snapshot_id = universe_snapshot_members.snapshot_id),
+                                symbol"""
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    first_seen = {}
+                    for snapshot_id, symbol, present in rows:
+                        if symbol not in first_seen:
+                            first_seen[symbol] = snapshot_id
+                    for snapshot_id, symbol, present in rows:
+                        if present == 0:
+                            status = "MISSING_IN_CURRENT_SCAN"
+                        elif snapshot_id == first_seen.get(symbol):
+                            status = "NEW_IN_CURRENT_SCAN"
+                        else:
+                            status = "ACTIVE"
+                        cursor.execute(
+                            """UPDATE universe_snapshot_members
+                               SET status = ?,
+                                   first_seen_at = COALESCE(first_seen_at, (SELECT MIN(created_at) FROM universe_snapshots WHERE universe_snapshots.snapshot_id = universe_snapshot_members.snapshot_id)),
+                                   last_seen_at = COALESCE(last_seen_at, (SELECT MAX(created_at) FROM universe_snapshots WHERE universe_snapshots.snapshot_id = universe_snapshot_members.snapshot_id))
+                               WHERE snapshot_id = ? AND symbol = ?""",
+                            (status, snapshot_id, symbol),
+                        )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _migrate_signal_timing(self) -> None:
         """
@@ -297,9 +447,11 @@ class SQLiteHistoryRepository:
                 error_count, report (CycleReport or dict).
         """
         report = cycle_data.get("report", {})
-        # If report is a CycleReport or similar, convert to dict for JSON
-        if hasattr(report, "start_time"):
-            report_json = json.dumps(report, default=str, indent=2)
+        # If report is a CycleReport dataclass, convert to dict so that the
+        # full report (including diagnostics["trace"]) persists as JSON,
+        # not as a flattened str(dataclass).
+        if hasattr(report, "start_time") and is_dataclass(report):
+            report_json = json.dumps(asdict(report), default=str, indent=2)
         else:
             report_json = json.dumps(report, default=str, indent=2)
 
@@ -1972,6 +2124,292 @@ class SQLiteHistoryRepository:
             return results
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # Trwały rejestr uniwersum (Krok 3/8)
+    # ------------------------------------------------------------------
+
+    def save_universe_snapshot(self, snapshot) -> None:
+        """Atomowo zapisz jeden snapshot uniwersum (snapshot + członków +
+        instrumenty). Błąd któregokolwiek elementu wycofuje cały zapis."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            # 1. Snapshot główny — sequence nadawana w tej samej transakcji
+            cursor.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM universe_snapshots")
+            seq = cursor.fetchone()[0]
+            cursor.execute(
+                """INSERT OR REPLACE INTO universe_snapshots
+                   (snapshot_id, sequence, created_at, total_records, unique_symbols)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (snapshot.snapshot_id, seq, snapshot.created_at,
+                 snapshot.total_records, snapshot.unique_symbols),
+            )
+
+            # 2. Członkowie + instrumenty (atomowo w tej samej transakcji)
+            seen = set()
+            for member in snapshot.members:
+                if member.symbol in seen:
+                    continue
+                seen.add(member.symbol)
+                # Insert instrumentu, jeżeli nie istnieje (zachowaj first_seen_at)
+                cursor.execute(
+                    """INSERT OR IGNORE INTO universe_instruments
+                       (symbol, quote_type, exchange, market, currency,
+                        regular_market_price, first_seen_at, last_seen_at,
+                        status, chart_status, candles_received, candles_valid,
+                        candles_rejected, rejection_reasons_json,
+                        daily_status, daily_candles_received, daily_candles_valid,
+                        daily_candles_rejected, daily_rejection_reasons_json,
+                        intraday_status, intraday_candles_received,
+                        intraday_candles_valid, intraday_candles_rejected,
+                        intraday_rejection_reasons_json,
+                        baseline_status, last_reading_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (member.symbol, None, None, None, None, None,
+                     member.first_seen_at if hasattr(member, "first_seen_at") else None,
+                     member.last_seen_at if hasattr(member, "last_seen_at") else None,
+                     "ACTIVE", "NOT_STARTED", 0, 0, 0, "{}",
+                     None, 0, 0, 0, "{}",
+                     None, 0, 0, 0, "{}",
+                     None, None),
+                )
+                cursor.execute(
+                    """UPDATE universe_instruments
+                       SET last_seen_at = COALESCE(?, last_seen_at),
+                           status = CASE WHEN ? IS NOT NULL THEN ? ELSE status END,
+                           chart_status = CASE WHEN ? IS NOT NULL THEN ? ELSE chart_status END,
+                           candles_valid = COALESCE(?, candles_valid),
+                           candles_rejected = COALESCE(?, candles_rejected),
+                           rejection_reasons_json = COALESCE(?, rejection_reasons_json),
+                           daily_status = COALESCE(?, daily_status),
+                           daily_candles_received = COALESCE(?, daily_candles_received),
+                           daily_candles_valid = COALESCE(?, daily_candles_valid),
+                           daily_candles_rejected = COALESCE(?, daily_candles_rejected),
+                           daily_rejection_reasons_json = COALESCE(?, daily_rejection_reasons_json),
+                           intraday_status = COALESCE(?, intraday_status),
+                           intraday_candles_received = COALESCE(?, intraday_candles_received),
+                           intraday_candles_valid = COALESCE(?, intraday_candles_valid),
+                           intraday_candles_rejected = COALESCE(?, intraday_candles_rejected),
+                           intraday_rejection_reasons_json = COALESCE(?, intraday_rejection_reasons_json),
+                           baseline_status = COALESCE(?, baseline_status),
+                           last_reading_id = COALESCE(?, last_reading_id)
+                       WHERE symbol = ?""",
+                    (member.last_seen_at if hasattr(member, "last_seen_at") else None,
+                     member.status if hasattr(member, "status") else None,
+                     member.status if hasattr(member, "status") else None,
+                     member.chart_status, member.chart_status,
+                     member.candles_valid if member.candles_valid >= 0 else None,
+                     member.candles_rejected if member.candles_rejected >= 0 else None,
+                     json.dumps(member.rejection_reasons or {}, default=str),
+                     getattr(member, "daily_status", None),
+                     getattr(member, "daily_candles_received", 0),
+                     getattr(member, "daily_candles_valid", 0),
+                     getattr(member, "daily_candles_rejected", 0),
+                     json.dumps(getattr(member, "daily_rejection_reasons", None) or {}, default=str),
+                     getattr(member, "intraday_status", None),
+                     getattr(member, "intraday_candles_received", 0),
+                     getattr(member, "intraday_candles_valid", 0),
+                     getattr(member, "intraday_candles_rejected", 0),
+                     json.dumps(getattr(member, "intraday_rejection_reasons", None) or {}, default=str),
+                     member.baseline_status, member.last_reading_id,
+                     member.symbol),
+                )
+                cursor.execute(
+                    """INSERT OR REPLACE INTO universe_snapshot_members
+                       (snapshot_id, symbol, present, status, first_seen_at,
+                        last_seen_at, chart_status,
+                        candles_received, candles_valid, candles_rejected,
+                        rejection_reasons_json,
+                        daily_status, daily_candles_received, daily_candles_valid,
+                        daily_candles_rejected, daily_rejection_reasons_json,
+                        intraday_status, intraday_candles_received,
+                        intraday_candles_valid, intraday_candles_rejected,
+                        intraday_rejection_reasons_json,
+                        baseline_status, last_reading_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (snapshot.snapshot_id, member.symbol,
+                     1 if member.present else 0,
+                     member.status, member.first_seen_at, member.last_seen_at,
+                     member.chart_status, member.candles_received,
+                     member.candles_valid, member.candles_rejected,
+                     json.dumps(member.rejection_reasons or {}, default=str),
+                     getattr(member, "daily_status", None),
+                     getattr(member, "daily_candles_received", 0),
+                     getattr(member, "daily_candles_valid", 0),
+                     getattr(member, "daily_candles_rejected", 0),
+                     json.dumps(getattr(member, "daily_rejection_reasons", None) or {}, default=str),
+                     getattr(member, "intraday_status", None),
+                     getattr(member, "intraday_candles_received", 0),
+                     getattr(member, "intraday_candles_valid", 0),
+                     getattr(member, "intraday_candles_rejected", 0),
+                     json.dumps(getattr(member, "intraday_rejection_reasons", None) or {}, default=str),
+                     member.baseline_status, member.last_reading_id),
+                )
+
+            # 3. Dodaj nieobecnych jako członków present=0 (pełna matryca)
+            cursor.execute("SELECT symbol FROM universe_instruments")
+            known = {r[0] for r in cursor.fetchall()}
+            for sym in sorted(known - seen):
+                cursor.execute(
+                    """INSERT OR REPLACE INTO universe_snapshot_members
+                       (snapshot_id, symbol, present, status, chart_status)
+                       VALUES (?, ?, 0, 'MISSING_IN_CURRENT_SCAN', 'NOT_STARTED')""",
+                    (snapshot.snapshot_id, sym),
+                )
+
+            # 4. Oznacz wcześniej znane, nieobecne jako MISSING_IN_CURRENT_SCAN
+            if seen:
+                placeholders = ",".join("?" * len(seen))
+                cursor.execute(
+                    f"""UPDATE universe_instruments
+                        SET status = 'MISSING_IN_CURRENT_SCAN'
+                        WHERE symbol NOT IN ({placeholders})""",
+                    tuple(sorted(seen)),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE universe_instruments SET status = 'MISSING_IN_CURRENT_SCAN'"
+                )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_current_universe(self) -> list:
+        """Zwróć aktualne uniwersum (wszystkie instrumenty z rejestru)."""
+        from data.models.universe_instrument import UniverseInstrument
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT symbol, quote_type, exchange, market, currency,
+                          regular_market_price, first_seen_at, last_seen_at,
+                          status, chart_status, candles_received, candles_valid,
+                          candles_rejected, rejection_reasons_json,
+                          daily_status, daily_candles_received,
+                          daily_candles_valid, daily_candles_rejected,
+                          daily_rejection_reasons_json,
+                          intraday_status, intraday_candles_received,
+                          intraday_candles_valid, intraday_candles_rejected,
+                          intraday_rejection_reasons_json,
+                          baseline_status, last_reading_id
+                   FROM universe_instruments
+                   ORDER BY symbol""",
+            )
+            return [
+                UniverseInstrument(
+                    symbol=r[0], quote_type=r[1], exchange=r[2], market=r[3],
+                    currency=r[4], regular_market_price=r[5],
+                    first_seen_at=r[6], last_seen_at=r[7],
+                    status=r[8], chart_status=r[9],
+                    candles_received=r[10], candles_valid=r[11],
+                    candles_rejected=r[12],
+                    rejection_reasons=json.loads(r[13]) if r[13] else {},
+                    daily_status=r[14],
+                    daily_candles_received=r[15],
+                    daily_candles_valid=r[16],
+                    daily_candles_rejected=r[17],
+                    daily_rejection_reasons=json.loads(r[18]) if r[18] else {},
+                    intraday_status=r[19],
+                    intraday_candles_received=r[20],
+                    intraday_candles_valid=r[21],
+                    intraday_candles_rejected=r[22],
+                    intraday_rejection_reasons=json.loads(r[23]) if r[23] else {},
+                    baseline_status=r[24], last_reading_id=r[25],
+                )
+                for r in cursor.fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def get_snapshot(self, snapshot_id: str):
+        """Zwróć konkretny snapshot wraz z członkami lub None."""
+        from data.models.universe_snapshot import (
+            UniverseSnapshot,
+            UniverseSnapshotMember,
+        )
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT snapshot_id, created_at, total_records, unique_symbols
+                   FROM universe_snapshots WHERE snapshot_id = ?""",
+                (snapshot_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cursor.execute(
+                """SELECT symbol, present, status, first_seen_at, last_seen_at,
+                          chart_status, candles_received,
+                          candles_valid, candles_rejected, rejection_reasons_json,
+                          daily_status, daily_candles_received,
+                          daily_candles_valid, daily_candles_rejected,
+                          daily_rejection_reasons_json,
+                          intraday_status, intraday_candles_received,
+                          intraday_candles_valid, intraday_candles_rejected,
+                          intraday_rejection_reasons_json,
+                          baseline_status, last_reading_id
+                   FROM universe_snapshot_members
+                   WHERE snapshot_id = ? ORDER BY symbol""",
+                (snapshot_id,),
+            )
+            members = [
+                UniverseSnapshotMember(
+                    snapshot_id=snapshot_id, symbol=r[0],
+                    present=bool(r[1]), status=r[2],
+                    first_seen_at=r[3], last_seen_at=r[4],
+                    chart_status=r[5],
+                    candles_received=r[6], candles_valid=r[7],
+                    candles_rejected=r[8],
+                    rejection_reasons=json.loads(r[9]) if r[9] else {},
+                    daily_status=r[10],
+                    daily_candles_received=r[11],
+                    daily_candles_valid=r[12],
+                    daily_candles_rejected=r[13],
+                    daily_rejection_reasons=json.loads(r[14]) if r[14] else {},
+                    intraday_status=r[15],
+                    intraday_candles_received=r[16],
+                    intraday_candles_valid=r[17],
+                    intraday_candles_rejected=r[18],
+                    intraday_rejection_reasons=json.loads(r[19]) if r[19] else {},
+                    baseline_status=r[20], last_reading_id=r[21],
+                )
+                for r in cursor.fetchall()
+            ]
+            return UniverseSnapshot(
+                snapshot_id=row[0], created_at=row[1],
+                total_records=row[2], unique_symbols=row[3],
+                members=members,
+            )
+        finally:
+            conn.close()
+
+    def get_latest_snapshot(self):
+        """Zwróć ostatni snapshot (wg created_at) lub None."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT snapshot_id FROM universe_snapshots
+                   ORDER BY sequence DESC LIMIT 1""",
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self.get_snapshot(row[0])
+        finally:
+            conn.close()
+
+    def restore_universe(self) -> list:
+        """Jawne odtworzenie pełnego uniwersum po restarcie."""
+        return self.get_current_universe()
 
     # ------------------------------------------------------------------
     # Diagnostics

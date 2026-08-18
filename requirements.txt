@@ -18,3 +18,4 @@ schedule
 matplotlib
 fastapi
 uvicorn
+curl_cffi

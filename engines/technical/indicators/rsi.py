@@ -2,6 +2,7 @@
 
 from typing import List
 from data.models.market_data import MarketData
+from engines.technical.errors import InsufficientDataError
 
 
 def calculate_rsi(data: List[MarketData], window: int = 14) -> List[float]:
@@ -15,7 +16,9 @@ def calculate_rsi(data: List[MarketData], window: int = 14) -> List[float]:
         List of RSI values (same length as input data)
     """
     if len(data) < window + 1:
-        raise ValueError(f"Not enough data points for window size {window}")
+        raise InsufficientDataError(
+            f"Not enough data points for window size {window}"
+        )
     
     closes = [d.close for d in data]
     rsi_values = []

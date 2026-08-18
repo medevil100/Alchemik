@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional
 
 from engines.technical import TechnicalEngine
+from application.cycle_trace import SUCCESS as _TRACE_SUCCESS
 from engines.news import NewsPipeline
 from engines.ai import DecisionEngine
 from engines.ranking import RankingEngine
@@ -29,7 +30,7 @@ from engines.detectors import (
     TechnicalEventDetector,
 )
 from config.signal_timing import lookup_signal_timing
-from data.models import FinalAnalysisResult, MarketData, MarketEvent, InstrumentType
+from data.models import FinalAnalysisResult, MarketData, MarketEvent, InstrumentType, AISignal
 from data.models.company_info import CompanyInfo
 from data.models.hunter_result import HunterResult
 from data.models.pipeline_decision import PipelineDecision
@@ -342,7 +343,8 @@ class MasterEngine:
                  detector_registry=None,
                  composer_engine=None,
                  quality_engine=None,
-                 tavily_adapter=None):
+                 tavily_adapter=None,
+                 openai_provider=None):
         self.technical_engine = technical_engine or TechnicalEngine()
         self.news_engine = news_engine or NewsPipeline()
         self.ai_engine = ai_engine or DecisionEngine()
@@ -357,6 +359,7 @@ class MasterEngine:
         self._composer_engine = composer_engine or ComposerEngine()
         self._quality_engine = quality_engine or QualityEngine()
         self._tavily_adapter = tavily_adapter
+        self.openai_provider = openai_provider
 
     def _run_base_detectors(
         self,
@@ -492,6 +495,175 @@ class MasterEngine:
 
         return events
 
+    # ------------------------------------------------------------------
+    # AI payload construction (Punkt 4 — real AI boundary)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_ai_payload(
+        symbol: str,
+        market: str,
+        instrument_type: InstrumentType,
+        technical_result: AnalysisResult,
+        market_events: List[MarketEvent],
+        decisions_map: dict,
+    ) -> dict:
+        """Build the redacted, instrument-scoped payload for GPT-4o.
+
+        ONLY data belonging to this instrument is included. No secrets,
+        cookies, crumb, API keys, foreign-symbol data, or raw exceptions.
+
+        Returns a JSON-serialisable dict with at minimum: symbol, current
+        price, volume (preserving zero), data timestamp, baseline, change vs
+        baseline, deterministic history summary, technical indicators,
+        detected events (with quality + pipeline decision), Tavily context,
+        and data-completeness status.
+        """
+        market_data = list(getattr(technical_result, "market_data", []) or [])
+
+        current_price = None
+        current_volume = None
+        data_timestamp = None
+        baseline = None
+        change_vs_baseline = None
+
+        if market_data:
+            latest = market_data[-1]
+            current_price = latest.close
+            current_volume = latest.volume
+            data_timestamp = latest.timestamp.isoformat()
+            baseline = market_data[0].close
+            if baseline is not None and baseline != 0:
+                change_vs_baseline = round(
+                    (current_price - baseline) / baseline * 100.0, 4
+                )
+
+        history = [
+            {
+                "timestamp": m.timestamp.isoformat(),
+                "open": m.open,
+                "high": m.high,
+                "low": m.low,
+                "close": m.close,
+                "volume": m.volume,
+            }
+            for m in market_data
+        ]
+
+        technical_indicators = getattr(technical_result, "indicators", {}) or {}
+
+        has_complete_ohlcv = all(
+            m.open is not None
+            and m.high is not None
+            and m.low is not None
+            and m.close is not None
+            for m in market_data
+        )
+        data_completeness = "COMPLETE" if has_complete_ohlcv else "PARTIAL"
+
+        events_out = []
+        for ev in market_events:
+            decision = decisions_map.get(ev.event_id)
+            events_out.append({
+                "event_id": ev.event_id,
+                "event_type": ev.event_type,
+                "event_category": ev.event_category,
+                "event_subcategory": ev.event_subcategory,
+                "quality_level": ev.quality_level.value,
+                "priority_raw": ev.priority_raw.value,
+                "priority_final": ev.priority_final.value,
+                "confidence_level": ev.confidence_level,
+                "signal_timing": ev.signal_timing.value,
+                "pipeline_decision": (
+                    {
+                        "run_news": decision.run_news,
+                        "run_tavily": decision.run_tavily,
+                        "run_ai": decision.run_ai,
+                        "reason": decision.reason,
+                    }
+                    if decision is not None
+                    else None
+                ),
+                "tavily_context": ev.tavily_context,
+                "price_data": ev.price_data.to_dict() if ev.price_data else None,
+                "volume_data": ev.volume_data.to_dict() if ev.volume_data else None,
+            })
+
+        return {
+            "symbol": symbol,
+            "market": market,
+            "instrument_type": instrument_type.value,
+            "current_price": current_price,
+            "volume": current_volume,
+            "data_timestamp": data_timestamp,
+            "baseline_close": baseline,
+            "change_vs_baseline_pct": change_vs_baseline,
+            "history": history,
+            "technical_indicators": technical_indicators,
+            "detected_events": events_out,
+            "data_completeness": data_completeness,
+        }
+
+    # ------------------------------------------------------------------
+    # AI result conversion (Punkt 4 — real AI boundary)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _provider_result_to_aisignal(provider_result) -> AISignal:
+        """Convert a validated provider result to an ``AISignal``.
+
+        ``confidence`` comes from the real model response, never from the
+        ``DecisionEngine`` placeholder. A refusal or a missing structured
+        output is preserved explicitly with ``confidence=0.0`` and a
+        non-``combined_analysis`` signal type so it is never presented as
+        a successful model output.
+        """
+        if provider_result is None:
+            return AISignal(
+                signal_type="ai_error",
+                confidence=0.0,
+                generated_at=datetime.now(timezone.utc),
+                reasoning="AI provider returned no result",
+            )
+
+        if getattr(provider_result, "refusal", None) is not None:
+            return AISignal(
+                signal_type="refusal",
+                confidence=0.0,
+                generated_at=datetime.now(timezone.utc),
+                reasoning=provider_result.refusal,
+            )
+
+        result = getattr(provider_result, "result", None)
+        if result is None:
+            return AISignal(
+                signal_type="ai_error",
+                confidence=0.0,
+                generated_at=datetime.now(timezone.utc),
+                reasoning="AI provider returned no structured output",
+            )
+
+        parts = []
+        if result.facts:
+            parts.append("Fakty: " + " | ".join(result.facts))
+        if result.hypotheses:
+            parts.append("Hipotezy: " + " | ".join(result.hypotheses))
+        if result.alternatives:
+            parts.append("Alternatywy: " + " | ".join(result.alternatives))
+        if result.risks:
+            parts.append("Ryzyka: " + " | ".join(result.risks))
+        if result.data_limitations:
+            parts.append("Ograniczenia: " + " | ".join(result.data_limitations))
+        if result.justification:
+            parts.append("Uzasadnienie: " + result.justification)
+
+        return AISignal(
+            signal_type="combined_analysis",
+            confidence=result.confidence,
+            generated_at=datetime.now(timezone.utc),
+            reasoning=" ".join(parts),
+        )
+
     def run_analysis(
         self,
         symbol: str,
@@ -499,6 +671,7 @@ class MasterEngine:
         instrument_type: InstrumentType = InstrumentType.STOCK_USA,
         events_out: Optional[List[MarketEvent]] = None,
         ohlcv_data: Optional[List[MarketData]] = None,
+        trace=None,
     ) -> FinalAnalysisResult:
         """
         Execute the full analysis pipeline for a single instrument.
@@ -511,6 +684,13 @@ class MasterEngine:
             raise ValueError("Invalid symbol. Symbol must be a non-empty string.")
 
         # Step 1: Technical Engine
+        # TechnicalEngine.analyze() raises ValueError when the supplied history
+        # is too short for its indicators (SMA(20), RSI(14), EMA(26), MACD
+        # signal EMA(9)). That error must propagate to the caller as a
+        # per-instrument failure rather than being converted into a
+        # fake-looking empty AnalysisResult.
+        if trace is not None:
+            trace.stage_start("technical")
         if ohlcv_data:
             technical_result = self.technical_engine.analyze(ohlcv_data)
         else:
@@ -523,6 +703,15 @@ class MasterEngine:
             )
             technical_result.indicators = {}
 
+        if trace is not None:
+            indicators_count = len(getattr(technical_result, "indicators", {}) or {})
+            trace.stage_end("technical", _TRACE_SUCCESS, output_count=indicators_count)
+            trace.instrument_update(
+                symbol,
+                technical_status=_TRACE_SUCCESS,
+                indicators_count=indicators_count,
+            )
+
         # Step 2: Run detectors on market data
         market_events: List[MarketEvent] = []
         if hasattr(technical_result, 'market_data') and technical_result.market_data:
@@ -531,6 +720,13 @@ class MasterEngine:
                 market=market,
                 instrument_type=instrument_type,
                 ohlcv_data=technical_result.market_data,
+            )
+
+        if trace is not None:
+            trace.instrument_update(
+                symbol,
+                events_count=len(market_events),
+                hunter_status=_TRACE_SUCCESS,
             )
 
         # Step 2a: Compose — merge related MarketEvents into Composite Events
@@ -565,21 +761,43 @@ class MasterEngine:
             events_out.extend(market_events)
 
         # Step 3: News Engine (conditional on pipeline decision)
+        # NewsPipeline.process() expects List[NewsItem]; there is no
+        # NewsItem source wired into MasterEngine at this stage, so pass an
+        # empty list instead of a list of symbol strings.
+        if trace is not None:
+            trace.stage_start("news")
         if run_news:
-            news_result = self.news_engine.process([symbol])
+            news_result = self.news_engine.process([])
         else:
             news_result = []
+        if trace is not None:
+            trace.stage_end(
+                "news",
+                _TRACE_SUCCESS if news_result else "EXECUTED_EMPTY",
+                input_count=1 if run_news else 0,
+                output_count=len(news_result) if news_result else 0,
+                reason=(
+                    "NewsPipeline executed with empty NewsItem list"
+                    if run_news and not news_result else None
+                ),
+            )
 
         # Step 3b: Tavily Search (conditional on pipeline decision)
         # Runs BEFORE AI so that tavily_context is available during AI analysis.
+        if trace is not None:
+            trace.stage_start("tavily")
+        tavily_attempted = 0
+        tavily_success = 0
         if market_events and self._tavily_adapter is not None:
             for ev in market_events:
                 ev_decision = decisions_map.get(ev.event_id)
                 if ev_decision is None or not ev_decision.run_tavily:
                     continue
 
+                tavily_attempted += 1
                 try:
                     ctx = self._tavily_adapter.search_for_event(ev)
+                    tavily_success += 1
                     ev.tavily_context = {
                         "query": ctx.query,
                         "results_count": ctx.results_count,
@@ -613,8 +831,73 @@ class MasterEngine:
                     symbol,
                 )
 
+        if trace is not None:
+            trace.stage_end(
+                "tavily",
+                _TRACE_SUCCESS if tavily_success else "EXECUTED_EMPTY",
+                input_count=tavily_attempted,
+                output_count=tavily_success,
+            )
+            if tavily_attempted:
+                trace.bump_external("tavily_attempts", tavily_attempted)
+            trace.instrument_update(
+                symbol,
+                tavily_attempted=tavily_attempted,
+                tavily_sent=tavily_attempted,
+                tavily_success=tavily_success,
+            )
+
         # Step 4: AI Engine (conditional on pipeline decision)
-        if market_events and run_ai_for_any:
+        if trace is not None:
+            trace.stage_start("ai")
+        # When a real OpenAI provider is wired in, qualified events trigger
+        # exactly one provider call per instrument. Its validated output
+        # becomes the AISignal with real model confidence; provider metadata
+        # (response id / request id) is retained for provenance. When no
+        # provider is configured, the DecisionEngine placeholder is kept for
+        # offline/backward-compatible runs.
+        ai_provider_metadata = {}
+        ai_attempted = 1 if (market_events and run_ai_for_any) else 0
+        ai_sent = 1 if (ai_attempted and self.openai_provider is not None) else 0
+        ai_validated = 0
+        ai_refusal = 0
+        ai_signal_created = False
+
+        if trace is not None and ai_sent:
+            trace.bump_external("openai_attempts", 1)
+
+        if market_events and run_ai_for_any and self.openai_provider is not None:
+            for ev in market_events:
+                if hasattr(technical_result, 'indicators') and technical_result.indicators:
+                    ev.technical_context = technical_result.indicators
+
+            payload = self._build_ai_payload(
+                symbol=symbol,
+                market=market,
+                instrument_type=instrument_type,
+                technical_result=technical_result,
+                market_events=market_events,
+                decisions_map=decisions_map,
+            )
+
+            try:
+                provider_result = self.openai_provider.analyze(payload)
+                ai_result = self._provider_result_to_aisignal(provider_result)
+                ai_provider_metadata = {
+                    "response_id": getattr(provider_result, "response_id", ""),
+                    "request_id": getattr(provider_result, "request_id", None),
+                    "refusal": getattr(provider_result, "refusal", None),
+                }
+            except Exception as exc:  # noqa: BLE001 — provider boundary
+                logger.warning("OpenAI provider failed for %s: %s", symbol, exc)
+                ai_result = AISignal(
+                    signal_type="ai_error",
+                    confidence=0.0,
+                    generated_at=datetime.now(timezone.utc),
+                    reasoning="AI provider error",
+                )
+                ai_provider_metadata = {"error": "provider_error"}
+        elif market_events and run_ai_for_any:
             ai_results: List = []
             for ev in market_events:
                 ev_decision = decisions_map.get(ev.event_id)
@@ -645,6 +928,46 @@ class MasterEngine:
                 "symbol": symbol, "technical": technical_result, "news": news_result
             })
 
+        # Attach provider metadata to the first qualified event for provenance
+        # (no secrets; only provider ids and the model-declared confidence).
+        if ai_provider_metadata and market_events:
+            for ev in market_events:
+                decision = decisions_map.get(ev.event_id)
+                if decision is not None and decision.run_ai:
+                    ev.ai_context = dict(ai_provider_metadata)
+                    ev.ai_context["confidence"] = ai_result.confidence
+                    ev.ai_context["signal_type"] = ai_result.signal_type
+                    ev.ai_context["reasoning"] = ai_result.reasoning
+                    if ev.tavily_context is not None:
+                        ev.ai_context["tavily_context"] = ev.tavily_context
+                    break
+
+        if ai_result is not None:
+            signal_type = getattr(ai_result, "signal_type", None)
+            if signal_type == "combined_analysis":
+                ai_validated = 1
+                ai_signal_created = True
+            elif signal_type == "refusal":
+                ai_refusal = 1
+
+        if trace is not None:
+            trace.stage_end(
+                "ai",
+                _TRACE_SUCCESS if ai_signal_created else (
+                    "EXECUTED_EMPTY" if not ai_attempted else _TRACE_SUCCESS
+                ),
+                input_count=ai_sent,
+                output_count=ai_validated,
+            )
+            trace.instrument_update(
+                symbol,
+                ai_attempted=ai_attempted,
+                ai_sent=ai_sent,
+                ai_validated=ai_validated,
+                ai_refusal=ai_refusal,
+                ai_signal_created=bool(ai_signal_created),
+            )
+
         # Build a complete AnalysisResult for RankingEngine and RiskEngine.
         # technical_result carries market_data and (dynamically) indicators;
         # company is filled from the symbol/metadata available in run_analysis();
@@ -658,10 +981,18 @@ class MasterEngine:
         analysis_result.signals.append(ai_result)
 
         # Step 5: Ranking Engine
+        if trace is not None:
+            trace.stage_start("ranking")
         ranking_result = self.ranking_engine.calculate_ranking([analysis_result])
+        if trace is not None:
+            trace.stage_end("ranking", _TRACE_SUCCESS, output_count=len(ranking_result.results))
 
         # Step 6: Risk Engine
+        if trace is not None:
+            trace.stage_start("risk")
         risk_result = self.risk_engine.assess_risk(analysis_result, ranking_result)
+        if trace is not None:
+            trace.stage_end("risk", _TRACE_SUCCESS, output_count=1)
 
         # Step 7: Hunter Engine
         # Map to HunterEngine's expected dict keys: instrument_id, ranking_score,
@@ -703,7 +1034,16 @@ class MasterEngine:
             hunter_result=single_hunter,
         )
 
-        return FinalAnalysisResult(
+        if trace is not None:
+            trace.stage_start("final_result")
+            trace.instrument_update(
+                symbol,
+                master_status=_TRACE_SUCCESS,
+                final_result_created=True,
+                final_status=_TRACE_SUCCESS,
+            )
+
+        final_result = FinalAnalysisResult(
             symbol=symbol,
             final_rating=analyst_result.final_rating,
             confidence_level=analyst_result.confidence_level,
@@ -714,3 +1054,6 @@ class MasterEngine:
             summary=analyst_result.summary,
             generated_at=datetime.now()
         )
+        if trace is not None:
+            trace.stage_end("final_result", _TRACE_SUCCESS, output_count=1)
+        return final_result

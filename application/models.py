@@ -1,7 +1,21 @@
 # Models for the application layer
 from typing import List, Optional, Union
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+class CycleKind:
+    """Jawne wyniki cyklu Runtime (Krok 4/8).
+
+    Addytywny, minimalny kontrakt wyniku cyklu:
+      * BASELINE_INITIALIZED — pierwszy cykl utworzył matrycę/baseline bez sygnałów;
+      * SUBSEQUENT_CYCLE      — cykl porównawczy z istniejącą matrycą;
+      * SOURCE_ERROR         — błąd źródła discovery; poprzednia matryca zachowana.
+    """
+
+    BASELINE_INITIALIZED = "BASELINE_INITIALIZED"
+    SUBSEQUENT_CYCLE = "SUBSEQUENT_CYCLE"
+    SOURCE_ERROR = "SOURCE_ERROR"
 
 @dataclass
 class CycleReport:
@@ -18,6 +32,7 @@ class CycleReport:
     alerts_count: int = 0
     alert_success_count: int = 0
     alert_error_count: int = 0
+    diagnostics: dict = field(default_factory=dict)
 
 @dataclass
 class CandidateError:

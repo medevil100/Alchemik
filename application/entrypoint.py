@@ -25,8 +25,6 @@ from application.market_scanner import MarketScanner
 from application.universe import PennyStockUniverse
 from application.alert_dispatcher import AlertDispatcher
 from application.sqlite_history_repository import SQLiteHistoryRepository
-from application.sources.static_instrument_source import StaticInstrumentSource
-from application.providers.yahoo_scan_provider import YahooScanProvider
 from data.yahoo.yahoo_fetcher import YahooFetcher
 from application.opportunity_deduplicator import OpportunityDeduplicator
 from application.alert_builder import AlertBuilder
@@ -48,13 +46,26 @@ from config.outcome import OutcomeConfig
 logger = logging.getLogger(__name__)
 
 
-def build_runtime_service(persist_path: Path = None) -> RuntimeService:
+def build_runtime_service(
+    persist_path: Path = None,
+    *,
+    yahoo_session=None,
+    source_kind: str = None,
+    static_tickers=None,
+) -> RuntimeService:
     """
     Build and wire a production RuntimeService with SQLite persistence.
 
     Args:
         persist_path: Path to SQLite database. If None, uses default from
                       config.RuntimeConfig.
+        yahoo_session: Optional injected YahooSession for tests. When omitted,
+                       a production session over CurlCffiTransport is built.
+        source_kind: Explicit instrument source kind. Defaults to dynamic
+                     Yahoo discovery. The static source is an explicit fallback
+                     and is never selected automatically.
+        static_tickers: Approved list of exact Yahoo symbols, required only
+                        when source_kind == "static".
 
     Returns:
         A fully wired RuntimeService instance.
@@ -65,11 +76,36 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
     )
 
     # --- Data sources ---
-    instrument_source = StaticInstrumentSource()
+    # Production source is dynamic Yahoo discovery. The static list is an
+    # explicit emergency variant selected only by configuration.
+    from config.instrument_source import (
+        SOURCE_KIND_STATIC,
+        resolve_source_kind,
+        validate_static_tickers,
+    )
+
+    if yahoo_session is None:
+        from data.yahoo.yahoo_transport import CurlCffiTransport
+        from data.yahoo.yahoo_session import YahooSession
+        yahoo_session = YahooSession(CurlCffiTransport())
+
+    effective_kind = resolve_source_kind(source_kind)
+    if effective_kind == SOURCE_KIND_STATIC:
+        from application.sources.static_instrument_source import StaticInstrumentSource
+        validated_tickers = validate_static_tickers(static_tickers)
+        instrument_source = StaticInstrumentSource(validated_tickers)
+    else:
+        from application.sources.yahoo_discovery_source import YahooDiscoverySource
+        instrument_source = YahooDiscoverySource(yahoo_session)
+
     universe = PennyStockUniverse(instrument_source)
-    yahoo_fetcher = YahooFetcher()
-    scan_provider = YahooScanProvider(yahoo_fetcher)
+
+    from application.providers.yahoo_chart_provider import YahooChartProvider
+    scan_provider = YahooChartProvider(yahoo_session, discovery_source=instrument_source)
     market_scanner = MarketScanner(universe, scan_provider)
+
+    # Keep YahooFetcher for OutcomeComputer's existing contract.
+    yahoo_fetcher = YahooFetcher()
 
     # --- Deduplication ---
     deduplicator = OpportunityDeduplicator(deduplication_window_seconds=3600)
@@ -77,6 +113,46 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
     # --- Alert components ---
     alert_builder = AlertBuilder()
     alert_dispatcher = AlertDispatcher()  # No channels by default
+
+    # --- Telegram (real, when configured; gracefully disabled otherwise) ---
+    telegram_channel = None
+    telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if telegram_bot_token.strip() and telegram_chat_id.strip():
+        from application.channels.telegram_channel import TelegramChannel
+
+        telegram_channel = TelegramChannel(
+            bot_token=telegram_bot_token,
+            chat_id=telegram_chat_id,
+        )
+
+    # --- Tavily (real, when configured; gracefully disabled otherwise) ---
+    tavily_adapter = None
+    try:
+        from data.tavily.config import TavilyConfig
+        from data.tavily.service import TavilyService
+        from data.tavily.event_adapter import TavilyEventAdapter
+
+        tavily_config = TavilyConfig.from_env()
+        if tavily_config.enabled:
+            tavily_adapter = TavilyEventAdapter(TavilyService(tavily_config))
+    except Exception:
+        # No Tavily key / disabled / invalid config — the flow continues
+        # without the Tavily context (Plan B: skip, do not fabricate news).
+        tavily_adapter = None
+
+    # --- OpenAI GPT-4o (real, only when a key is present) ---
+    openai_provider = None
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_api_key.strip():
+        from engines.ai.openai_provider import OpenAIProvider
+
+        openai_provider = OpenAIProvider(
+            api_key=openai_api_key,
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
+            timeout=float(os.environ.get("OPENAI_TIMEOUT", "30")),
+            max_retries=0,  # Punkt 4: exactly one attempt per application call
+        )
 
     # --- Engines ---
     hunter_config = {
@@ -106,6 +182,8 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
         ranking_engine=ranking_engine,
         risk_engine=risk_engine,
         analyst_engine=analyst_engine,
+        tavily_adapter=tavily_adapter,
+        openai_provider=openai_provider,
     )
 
     # --- Outcome Computer ---
@@ -124,6 +202,7 @@ def build_runtime_service(persist_path: Path = None) -> RuntimeService:
         deduplicator=deduplicator,
         alert_builder=alert_builder,
         alert_dispatcher=alert_dispatcher,
+        telegram_channel=telegram_channel,
         outcome_computer=outcome_computer,
     )
 
@@ -139,6 +218,10 @@ def main():
 
     runtime = build_runtime_service()
     runtime.restore_active_observations()
+    # Krok 4/8: produkcyjny cykl matrycy jest jawnie włączany w głównym
+    # entrypoincie. Testy używające build_runtime_service() bez tej flagi
+    # zachowują niezmienione istniejące zachowanie run_cycle().
+    runtime.production_matrix_cycle = True
     report = runtime.run_cycle()
 
     logger.info("Cycle complete: %d candidates, %d success, %d errors",

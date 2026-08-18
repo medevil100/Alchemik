@@ -60,12 +60,21 @@ class AlertDispatcher:
 
         for channel in channels:
             try:
-                channel.send(alert_message)
-                report.success_count += 1
-                report.successful_channels.append(str(channel))
+                result = channel.send(alert_message)
             except Exception as e:
                 report.error_count += 1
                 report.failed_channels[str(channel)] = str(e)
+                continue
+
+            success = getattr(result, "success", True)
+            if success is False:
+                report.error_count += 1
+                report.failed_channels[str(channel)] = (
+                    getattr(result, "error_message", None) or "Channel send failed"
+                )
+            else:
+                report.success_count += 1
+                report.successful_channels.append(str(channel))
 
         report.finished_at = datetime.now()
         return report

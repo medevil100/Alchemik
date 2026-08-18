@@ -2,6 +2,7 @@
 
 from typing import List
 from data.models.market_data import MarketData
+from engines.technical.errors import InsufficientDataError
 
 
 def calculate_ema(data: List[MarketData], window: int = 20) -> List[float]:
@@ -15,7 +16,9 @@ def calculate_ema(data: List[MarketData], window: int = 20) -> List[float]:
         List of EMA values (same length as input data)
     """
     if len(data) < window:
-        raise ValueError(f"Not enough data points for window size {window}")
+        raise InsufficientDataError(
+            f"Not enough data points for window size {window}"
+        )
         
     closes = [d.close for d in data]
     ema_values = []

@@ -5,6 +5,8 @@ class HistoryRepository:
         self._cycles = {}
         self._observations = {}
         self._readings = {}
+        self._universe = {}
+        self._snapshots = {}
 
     # ------------------------------------------------------------------
     # Kontrakt trwałości InstrumentReading / InstrumentObservation
@@ -70,6 +72,59 @@ class HistoryRepository:
         # Store reading
         self._readings[identity] = reading
         return "ACCEPTED"
+
+    # ------------------------------------------------------------------
+    # Kontrakt trwałego rejestru uniwersum (Krok 3/8)
+    # ------------------------------------------------------------------
+
+    def save_universe_snapshot(self, snapshot) -> None:
+        """Atomowy zapis snapshotu uniwersum (pamięciowy odpowiednik)."""
+        from data.models.universe_instrument import UniverseInstrument
+        now = snapshot.created_at
+        seen = set()
+        for inst in snapshot.instruments:
+            row = inst.to_row()
+            if row["symbol"] in seen:
+                continue
+            seen.add(row["symbol"])
+            if row["symbol"] in self._universe:
+                existing = self._universe[row["symbol"]]
+                existing.last_seen_at = row["last_seen_at"] or existing.last_seen_at
+                existing.status = "ACTIVE" if row["status"] == "ACTIVE" else row["status"]
+                existing.chart_status = row["chart_status"]
+                existing.candles_received = row["candles_received"]
+                existing.candles_valid = row["candles_valid"]
+                existing.candles_rejected = row["candles_rejected"]
+                existing.rejection_reasons = dict(row["rejection_reasons"] or {})
+                existing.baseline_status = row["baseline_status"] or existing.baseline_status
+                if row["last_reading_id"]:
+                    existing.last_reading_id = row["last_reading_id"]
+            else:
+                self._universe[row["symbol"]] = UniverseInstrument(**row)
+        # Oznacz wcześniej znane, nieobecne jako MISSING_IN_CURRENT_SCAN.
+        present = set(seen)
+        for sym, inst in self._universe.items():
+            if sym not in present:
+                inst.status = "MISSING_IN_CURRENT_SCAN"
+        self._snapshots[snapshot.snapshot_id] = snapshot
+
+    def get_current_universe(self) -> list:
+        """Zwróć aktualne uniwersum (bez usuwania instrumentów)."""
+        return list(self._universe.values())
+
+    def get_snapshot(self, snapshot_id: str):
+        """Zwróć konkretny snapshot lub None."""
+        return self._snapshots.get(snapshot_id)
+
+    def get_latest_snapshot(self):
+        """Zwróć ostatni snapshot (wg kolejności zapisu) lub None."""
+        if not self._snapshots:
+            return None
+        return self._snapshots[max(self._snapshots.keys())]
+
+    def restore_universe(self) -> list:
+        """Jawne odtworzenie uniwersum po restarcie (pamięciowe)."""
+        return self.get_current_universe()
 
     def load_observation(self, instrument_id: str):
         """

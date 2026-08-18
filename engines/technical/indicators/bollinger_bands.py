@@ -1,6 +1,7 @@
 from typing import List, Tuple
 from data.models.market_data import MarketData
 from engines.technical.indicators.sma import calculate_sma
+from engines.technical.errors import InsufficientDataError
 
 def calculate_bollinger_bands(data: List[MarketData], window: int = 20, num_std_dev: int = 2) -> Tuple[List[float], List[float], List[float]]:
     """
@@ -20,7 +21,9 @@ def calculate_bollinger_bands(data: List[MarketData], window: int = 20, num_std_
     if window <= 0:
         raise ValueError("Window size must be a positive integer.")
     if len(data) < window:
-        raise ValueError("Insufficient data points for the specified window size.")
+        raise InsufficientDataError(
+            "Insufficient data points for the specified window size."
+        )
     
     middle_band = calculate_sma(data, window)
     

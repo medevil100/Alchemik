@@ -15,8 +15,8 @@ class TestAlertBuilder(unittest.TestCase):
 
         self.valid_result = FinalAnalysisResult(
             symbol="TEST",
-            final_rating=80.0,
-            confidence_level=85.0,
+            final_rating=0.80,
+            confidence_level=0.85,
             recommendation="STRONG_BUY",
             positive_factors=[],
             risk_factors=[],
@@ -37,8 +37,8 @@ class TestAlertBuilder(unittest.TestCase):
         """Test that low final_score prevents alert"""
         low_score = FinalAnalysisResult(
             symbol="TEST",
-            final_rating=60.0,
-            confidence_level=85.0,
+            final_rating=0.60,
+            confidence_level=0.85,
             recommendation="STRONG_BUY",
             positive_factors=[],
             risk_factors=[],
@@ -52,8 +52,8 @@ class TestAlertBuilder(unittest.TestCase):
         """Test that low confidence_level prevents alert"""
         low_conf = FinalAnalysisResult(
             symbol="TEST",
-            final_rating=80.0,
-            confidence_level=60.0,
+            final_rating=0.80,
+            confidence_level=0.60,
             recommendation="STRONG_BUY",
             positive_factors=[],
             risk_factors=[],
@@ -67,8 +67,8 @@ class TestAlertBuilder(unittest.TestCase):
         """Test that disallowed recommendation prevents alert"""
         bad_rec = FinalAnalysisResult(
             symbol="TEST",
-            final_rating=80.0,
-            confidence_level=85.0,
+            final_rating=0.80,
+            confidence_level=0.85,
             recommendation="HOLD",
             positive_factors=[],
             risk_factors=[],
@@ -99,8 +99,8 @@ class TestAlertBuilder(unittest.TestCase):
         msg = self.builder.format_message(alert)
         self.assertIn("TEST", msg)
         self.assertIn("STRONG_BUY", msg)
-        self.assertIn("80.0", msg)
-        self.assertIn("85.0%", msg)
+        self.assertIn("0.80", msg)
+        self.assertIn("85%", msg)
         # Without MarketEvent, ai_summary is None — no summary line expected.
         # The old "Test summary" from FinalAnalysisResult.summary is no longer
         # automatically included; AI summary comes from event.ai_context only.
@@ -114,8 +114,8 @@ class TestAlertBuilder(unittest.TestCase):
         """Test empty symbol raises error"""
         empty_sym = FinalAnalysisResult(
             symbol="",
-            final_rating=80.0,
-            confidence_level=85.0,
+            final_rating=0.80,
+            confidence_level=0.85,
             recommendation="STRONG_BUY",
             positive_factors=[],
             risk_factors=[],
@@ -239,8 +239,8 @@ class TestAlertBuilder(unittest.TestCase):
         self.assertIn("Priority: HIGH", msg)
         self.assertIn("Quality: HIGH", msg)
         self.assertIn("AI Rating: BUY", msg)
-        self.assertIn("Score: 80.0", msg)
-        self.assertIn("Confidence: 85.0%", msg)
+        self.assertIn("Score: 0.80", msg)
+        self.assertIn("Confidence: 85%", msg)
         self.assertIn("Price breaking resistance", msg)
 
     def test_ai_rating_is_presented_as_information(self):

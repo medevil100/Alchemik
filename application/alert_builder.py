@@ -1,9 +1,12 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
+import json
 from typing import Optional, List
 from data.models.final_analysis_result import FinalAnalysisResult
 from data.models.market_event import MarketEvent
+
+TELEGRAM_MESSAGE_LIMIT = 4096
 
 
 @dataclass
@@ -80,9 +83,10 @@ class AlertBuilder:
         if not result.symbol:
             raise ValueError("Symbol cannot be empty")
 
-        # Convert 0-100 scale to 0-1 for comparison
-        final_score = result.final_rating / 100
-        confidence = result.confidence_level / 100
+        # final_rating and confidence_level are domain values in [0.0, 1.0]
+        # (decyzja właściciela Punkt 7). No scaling is applied here.
+        final_score = result.final_rating
+        confidence = result.confidence_level
 
         # Base criteria — final_score, confidence, recommendation
         base_ok = (
@@ -133,26 +137,36 @@ class AlertBuilder:
         ai_summary = None
         market = None
         ai_rating = None
+        price_data = None
+        volume_data = None
+        technical_context = None
+        timestamp_utc = None
 
         if event is not None:
-            event_type = event.event_type if hasattr(event, 'event_type') else None
-            ef = event.event_family if hasattr(event, 'event_family') else None
+            event_type = getattr(event, 'event_type', None)
+            ef = getattr(event, 'event_family', None)
             event_family = getattr(ef, 'value', str(ef)) if ef is not None else None
-            pf = event.priority_final if hasattr(event, 'priority_final') else None
+            pf = getattr(event, 'priority_final', None)
             priority_final = getattr(pf, 'value', str(pf)) if pf is not None else None
-            ql = event.quality_level if hasattr(event, 'quality_level') else None
+            ql = getattr(event, 'quality_level', None)
             quality_level = getattr(ql, 'value', str(ql)) if ql is not None else None
-            is_composite = bool(event.is_composite) if hasattr(event, 'is_composite') else False
-            composite_events = (
-                event.composite_events if hasattr(event, 'composite_events') else None
-            )
+            is_composite = bool(getattr(event, 'is_composite', False))
+            composite_events = getattr(event, 'composite_events', None)
             composite_count = len(composite_events) if isinstance(composite_events, list) else 0
-            market = event.market if hasattr(event, 'market') else None
+            market = getattr(event, 'market', None)
+            price_data = getattr(event, 'price_data', None)
+            volume_data = getattr(event, 'volume_data', None)
+            technical_context = getattr(event, 'technical_context', None)
+            timestamp_utc = getattr(event, 'timestamp_utc', None)
 
             # Extract AI summary from ai_context
-            ai_ctx = event.ai_context if hasattr(event, 'ai_context') else None
+            ai_ctx = getattr(event, 'ai_context', None)
             if isinstance(ai_ctx, dict):
-                ai_summary = ai_ctx.get('summary') or ai_ctx.get('reasoning')
+                ai_summary = (
+                    ai_ctx.get('summary')
+                    or ai_ctx.get('reasoning')
+                    or ai_ctx.get('justification')
+                )
                 ai_rating = ai_ctx.get('signal_type')
 
         # Format priority string (fallback to result recommendation context)
@@ -161,6 +175,24 @@ class AlertBuilder:
         # Build formatted message
         lines = ["🚨 ALCHEMIK ALERT", ""]
         lines.append(f"Ticker: {symbol}")
+
+        if timestamp_utc is not None:
+            try:
+                data_time = timestamp_utc.isoformat()
+            except AttributeError:
+                data_time = str(timestamp_utc)
+            lines.append(f"Data time: {data_time}")
+
+        if price_data is not None and getattr(price_data, 'close', None) is not None:
+            lines.append(f"Price: {price_data.close}")
+
+        if volume_data is not None and getattr(volume_data, 'current_volume', None) is not None:
+            lines.append(f"Volume: {volume_data.current_volume}")
+
+        change_pct = getattr(price_data, 'change_pct', None) if price_data is not None else None
+        if change_pct is not None:
+            lines.append(f"Change vs baseline: {change_pct}%")
+
         if event_type:
             lines.append(f"Event Type: {event_type}")
         if event_family:
@@ -173,14 +205,28 @@ class AlertBuilder:
         if ai_rating:
             lines.append(f"AI Rating: {ai_rating}")
 
-        lines.append(f"Score: {result.final_rating:.1f}")
-        lines.append(f"Confidence: {result.confidence_level:.1f}%")
+        lines.append(f"Score: {result.final_rating:.2f}")
+        lines.append(f"Confidence: {result.confidence_level:.0%}")
+
+        if technical_context:
+            try:
+                tech_str = json.dumps(
+                    technical_context, ensure_ascii=False, default=str
+                )
+            except TypeError:
+                tech_str = str(technical_context)
+            lines.append(f"Technical: {tech_str}")
 
         if ai_summary:
             lines.append("")
             lines.append(f"AI Summary: {ai_summary}")
 
-        formatted_msg = "\n".join(lines)
+        lines.append("")
+        lines.append(
+            "Zastrzeżenie: wiadomość nie jest automatyczną rekomendacją BUY/SELL."
+        )
+
+        formatted_msg = _fit_telegram_limit("\n".join(lines))
 
         return AlertMessage(
             alert_id=alert_id,
@@ -194,8 +240,8 @@ class AlertBuilder:
             composite_count=composite_count,
             recommendation=result.recommendation,
             ai_rating=ai_rating,
-            final_score=result.final_rating / 100,
-            confidence_level=result.confidence_level / 100,
+            final_score=result.final_rating,
+            confidence_level=result.confidence_level,
             risk_level=None,
             ai_summary=ai_summary,
             created_at=datetime.now(),
@@ -213,3 +259,10 @@ class AlertBuilder:
             str: Formatted message text
         """
         return alert.formatted_message
+
+
+def _fit_telegram_limit(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> str:
+    """Return a single message that fits Telegram's per-message limit."""
+    if len(message) <= limit:
+        return message
+    return message[: limit - 1] + "…"

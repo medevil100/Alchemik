@@ -1,5 +1,6 @@
 from typing import List
 from data.models.market_data import MarketData
+from engines.technical.errors import InsufficientDataError
 
 def calculate_atr(data: List[MarketData], window: int = 14) -> List[float]:
     """
@@ -18,7 +19,9 @@ def calculate_atr(data: List[MarketData], window: int = 14) -> List[float]:
     if window <= 0:
         raise ValueError("Window size must be a positive integer.")
     if len(data) < window:
-        raise ValueError("Insufficient data points for the specified window size.")
+        raise InsufficientDataError(
+            "Insufficient data points for the specified window size."
+        )
     
     true_ranges = []
     for i in range(1, len(data)):

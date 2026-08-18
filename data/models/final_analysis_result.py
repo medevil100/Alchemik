@@ -9,8 +9,8 @@ class FinalAnalysisResult:
     
     Attributes:
         symbol (str): Instrument symbol
-        final_rating (float): Final analysis rating (0-100)
-        confidence_level (float): Confidence level (0-100)
+        final_rating (float): Final analysis rating (0.0-1.0)
+        confidence_level (float): Confidence level (0.0-1.0)
         recommendation (str): Buy/Hold/Sell recommendation
         positive_factors (List[str]): Key positive arguments
         risk_factors (List[str]): Key risk factors
