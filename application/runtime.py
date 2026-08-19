@@ -1,4 +1,5 @@
 # Runtime module for ALCHEMIK
+import functools
 import logging
 import uuid
 from typing import List, Optional, Dict, Tuple
@@ -26,6 +27,29 @@ from config import resolve_instrument_metadata
 logger = logging.getLogger(__name__)
 
 
+def _cycle_lock_guard(fn):
+    """Addytywny dekorator: systemowa blokada pojedynczego cyklu (Krok 1/8).
+
+    Pozyskuje blokadę PRZED jakimkolwiek efektem cyklu (CycleTraceRecorder,
+    scanner.scan(), discovery, chart, zapisy SQLite, save_cycle) i zwalnia ją
+    w finally — także przy wyjątku. Bez skonfigurowanej blokady (None)
+    zachowuje niezmienione dotychczasowe zachowanie.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_cycle_lock", None)
+        if lock is None:
+            return fn(self, *args, **kwargs)
+        lock.acquire()
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            lock.release()
+
+    return wrapper
+
+
 class RuntimeService:
     def __init__(self, hunter_engine, master_engine, history_repository: HistoryRepository, *,
                  market_scanner: Optional[MarketScanner] = None,
@@ -35,7 +59,8 @@ class RuntimeService:
                  telegram_channel=None,
                  instrument_metadata: Optional[Dict[str, Tuple[str, InstrumentType]]] = None,
                  outcome_computer=None,
-                 production_matrix_cycle: bool = False):
+                 production_matrix_cycle: bool = False,
+                 cycle_lock=None):
         self.hunter_engine = hunter_engine
         self.master_engine = master_engine
         self.history_repository = history_repository
@@ -49,6 +74,10 @@ class RuntimeService:
         # Krok 4/8: jawny tryb produkcyjnej matrycy. Domyślnie wyłączony —
         # zachowuje niezmienione istniejące zachowanie run_cycle().
         self.production_matrix_cycle = bool(production_matrix_cycle)
+        # Krok 1/8: opcjonalna, międzyprocesowa blokada pojedynczego cyklu.
+        # Produkcyjny composition root zawsze przekazuje rzeczywistą blokadę;
+        # ręczne środowiska (testy) mogą jawnie działać bez blokady (None).
+        self._cycle_lock = cycle_lock
 
     def _get_instrument_metadata(self, ticker: str) -> Tuple[str, InstrumentType]:
         """
@@ -1140,6 +1169,7 @@ class RuntimeService:
             "errors": errors,
         }
 
+    @_cycle_lock_guard
     def run_cycle(self, input_data: Optional[dict] = None) -> CycleReport:
         """Execute one cycle of the ALCHEMIK runtime.
 

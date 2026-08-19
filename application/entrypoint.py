@@ -75,6 +75,17 @@ def build_runtime_service(
         db_path=persist_path if persist_path else None
     )
 
+    # --- Krok 1/8: międzyprocesowa blokada pojedynczego cyklu ---
+    # Produkcyjny composition root zawsze tworzy rzeczywistą blokadę na
+    # podstawie dokładnej produkcyjnej ścieżki bazy SQLite. W środowiskach,
+    # gdzie repo jest podmienione (testy), blokada pozostaje None.
+    cycle_lock = None
+    _db_path_for_lock = getattr(history_repository, "db_path", None)
+    if isinstance(_db_path_for_lock, Path):
+        from application.cycle_lock import CycleLock
+
+        cycle_lock = CycleLock(_db_path_for_lock)
+
     # --- Data sources ---
     # Production source is dynamic Yahoo discovery. The static list is an
     # explicit emergency variant selected only by configuration.
@@ -204,6 +215,7 @@ def build_runtime_service(
         alert_dispatcher=alert_dispatcher,
         telegram_channel=telegram_channel,
         outcome_computer=outcome_computer,
+        cycle_lock=cycle_lock,
     )
 
     return runtime
