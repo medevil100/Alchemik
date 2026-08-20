@@ -157,7 +157,7 @@ class RuntimeService:
             data_completeness=completeness,
         )
         result = self.history_repository.save_reading(observation, reading)
-        if result == "ACCEPTED":
+        if result in ("ACCEPTED", "SOURCE_REVISION_ACCEPTED"):
             return result, reading, observation
         active = self.history_repository.restore_active_observations()
         for obs, rdg in active:
@@ -307,6 +307,7 @@ class RuntimeService:
             "chart_error": 0,
             "baseline_created": 0,
             "readings_saved": 0,
+            "revisions_saved": 0,
             "unchanged": 0,
             "changed": 0,
             "skipped_downstream": 0,
@@ -449,6 +450,7 @@ class RuntimeService:
         reading_results: Dict[str, Optional[str]] = {}
         baseline_created = 0
         readings_saved = 0
+        revisions_saved = 0
         unchanged = 0
         changed = 0
         changed_symbols: List[str] = []
@@ -482,6 +484,10 @@ class RuntimeService:
             if result == "ACCEPTED":
                 readings_saved += 1
                 recorder.instrument_update(sym, reading_status="ACCEPTED", observation_status=SUCCESS)
+            elif result == "SOURCE_REVISION_ACCEPTED":
+                # Rewizja źródła jest liczona oddzielnie od nowych Readingów.
+                revisions_saved += 1
+                recorder.instrument_update(sym, reading_status="SOURCE_REVISION_ACCEPTED", observation_status=SUCCESS)
             elif result in ("DUPLICATE_NO_OP", "STALE_TIMESTAMP"):
                 recorder.instrument_update(sym, reading_status=result, observation_status=SKIPPED)
             elif result == "CONFLICT":
@@ -491,7 +497,10 @@ class RuntimeService:
                 recorder.instrument_update(sym, reading_status=result, observation_status=SUCCESS)
 
         diagnostics["readings_saved"] = readings_saved
+        diagnostics["revisions_saved"] = revisions_saved
         diagnostics["saved_count"] = readings_saved
+        diagnostics["accepted_count"] = readings_saved + revisions_saved
+        diagnostics["skipped_unchanged_count"] = unchanged
 
         # Porównanie nowego odczytu z ostatnim trwałym Readingiem tego samego symbolu.
         for sym in symbols:

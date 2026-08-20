@@ -12,27 +12,43 @@ class HistoryRepository:
     # Kontrakt trwałości InstrumentReading / InstrumentObservation
     # ------------------------------------------------------------------
 
+    def _latest_revision(self, instrument_id: str, market_data_timestamp):
+        """Najnowsza rewizja dla tożsamości (instrument_id, timestamp) lub None."""
+        versions = [
+            r for r in self._readings.values()
+            if r.instrument_id == instrument_id
+            and r.market_data_timestamp == market_data_timestamp
+        ]
+        if not versions:
+            return None
+        return max(versions, key=lambda r: r.revision_number)
+
     def save_reading(self, observation, reading) -> str:
         """
-        Atomowo zapisz InstrumentObservation i InstrumentReading.
+        Atomowo zapisz InstrumentObservation i InstrumentReading z obsługą rewizji.
 
-        Otrzymuje istniejącą lub nowo utworzoną Observation (pierwszy argument)
-        oraz Reading do zapisania (drugi argument). Repozytorium zapisuje oba
-        atomowo; nie tworzy Observation samodzielnie.
-
-        Zwraca dokładnie jeden z czterech wyników:
-          * ``ACCEPTED``       — nowy fakt zapisany, Observation zaktualizowana
-          * ``DUPLICATE_NO_OP`` — identyczny fakt już istnieje, bez zmian
-          * ``CONFLICT``       — ta sama tożsamość, inna treść;
-                                  Observation → INTEGRITY_BREACHED
-          * ``STALE_TIMESTAMP``— starszy timestamp, odrzucony bez naruszenia
-                                  integralności
+        Zwraca dokładnie jeden z wyników:
+          * ``ACCEPTED``                 — nowy fakt (revision 1, supersedes NULL)
+          * ``DUPLICATE_NO_OP``          — identyczny timestamp i treść, bez zmian
+          * ``SOURCE_REVISION_ACCEPTED`` — zmieniona treść tego samego timestampu,
+                                            instrumentu, Observation i źródła;
+                                            nowa rewizja z supersedes_reading_id
+          * ``CONFLICT``                 — obca tożsamość, uszkodzone supersedes
+                                            albo ta sama tożsamość, inna treść;
+                                            Observation → INTEGRITY_BREACHED
+          * ``STALE_TIMESTAMP``          — starszy timestamp, odrzucony bez
+                                            naruszenia integralności
         """
         instrument_id = observation.instrument_id
-        identity = (instrument_id, reading.market_data_timestamp)
+        observation_id = observation.observation_id
+        market_ts = reading.market_data_timestamp
 
-        # Check for existing reading with same identity
-        existing = self._readings.get(identity)
+        # Obca tożsamość instrumentu → CONFLICT (nie jest rewizją)
+        if reading.instrument_id != instrument_id:
+            return "CONFLICT"
+
+        # Check for existing latest revision with same identity
+        existing = self._latest_revision(instrument_id, market_ts)
         if existing is not None:
             same_content = (
                 reading.open == existing.open
@@ -43,34 +59,96 @@ class HistoryRepository:
                 and reading.data_completeness == existing.data_completeness
                 and reading.source == existing.source
             )
+
+            reference = reading.supersedes_reading_id
+            valid_ref = (
+                reference is None
+                or reference == existing.reading_id
+            )
+
             if same_content:
-                return "DUPLICATE_NO_OP"
-            else:
+                # Identyczna treść — rewizja niepotrzebna; uszkodzone
+                # supersedes przy identycznej treści = CONFLICT.
+                return "DUPLICATE_NO_OP" if valid_ref else "CONFLICT"
+
+            # Zmieniona treść tego samego timestampu.
+            if (reading.observation_id != existing.observation_id) or (reading.source != existing.source):
                 observation.terminate("INTEGRITY_BREACHED", "Content conflict")
                 self._observations[instrument_id] = observation
                 return "CONFLICT"
 
+            if not valid_ref:
+                # Uszkodzone supersedes przy zmienionej treści → CONFLICT.
+                return "CONFLICT"
+
+            # Poprawna rewizja źródła: ta sama tożsamość, Observation i źródło.
+            # InstrumentReading jest immutable — tworzymy nowy obiekt z polami rewizji.
+            from data.models.instrument_reading import InstrumentReading
+            new_revision = existing.revision_number + 1
+            source_revision = InstrumentReading(
+                reading_id=reading.reading_id,
+                observation_id=reading.observation_id,
+                instrument_id=reading.instrument_id,
+                market_data_timestamp=reading.market_data_timestamp,
+                scan_timestamp=reading.scan_timestamp,
+                open=reading.open,
+                high=reading.high,
+                low=reading.low,
+                close=reading.close,
+                volume=reading.volume,
+                source=reading.source,
+                prev_reading_id=existing.reading_id,
+                data_completeness=reading.data_completeness,
+                revision_number=new_revision,
+                supersedes_reading_id=existing.reading_id,
+            )
+            self._observations[instrument_id] = observation
+            self._readings[(instrument_id, market_ts, new_revision)] = source_revision
+            return "SOURCE_REVISION_ACCEPTED"
+
         # Check for STALE_TIMESTAMP
         for stored_rdg in self._readings.values():
             if stored_rdg.instrument_id == instrument_id:
-                if reading.market_data_timestamp < stored_rdg.market_data_timestamp:
+                if market_ts < stored_rdg.market_data_timestamp:
                     return "STALE_TIMESTAMP"
 
-        # Determine prev_reading_id
+        # Determine prev_reading_id — najnowsza rewizja najnowszego timestampu
         prev_reading_id = None
         instrument_readings = [
             r for r in self._readings.values()
             if r.instrument_id == instrument_id
         ]
         if instrument_readings:
-            latest_rdg = max(instrument_readings, key=lambda r: r.market_data_timestamp)
+            latest_rdg = max(
+                instrument_readings,
+                key=lambda r: (r.market_data_timestamp, r.revision_number),
+            )
             prev_reading_id = latest_rdg.reading_id
 
         # Store observation
         self._observations[instrument_id] = observation
 
-        # Store reading
-        self._readings[identity] = reading
+        # Store reading (revision 1, supersedes NULL)
+        # InstrumentReading jest immutable — tworzymy nowy obiekt z polami rewizji.
+        from data.models.instrument_reading import InstrumentReading
+        accepted_reading = InstrumentReading(
+            reading_id=reading.reading_id,
+            observation_id=reading.observation_id,
+            instrument_id=reading.instrument_id,
+            market_data_timestamp=reading.market_data_timestamp,
+            scan_timestamp=reading.scan_timestamp,
+            open=reading.open,
+            high=reading.high,
+            low=reading.low,
+            close=reading.close,
+            volume=reading.volume,
+            source=reading.source,
+            prev_reading_id=prev_reading_id,
+            data_completeness=reading.data_completeness,
+            revision_number=1,
+            supersedes_reading_id=None,
+        )
+        self._readings[(instrument_id, market_ts, 1)] = accepted_reading
         return "ACCEPTED"
 
     # ------------------------------------------------------------------
@@ -141,7 +219,8 @@ class HistoryRepository:
     def restore_active_observations(self) -> list:
         """
         Przywróć wszystkie ACTIVE Observations wraz z ich ostatnim
-        zaakceptowanym Readingiem (wg największego market_data_timestamp).
+        zaakceptowanym Readingiem (wg największego market_data_timestamp,
+        a dla tego samego timestampu — najwyższego revision_number).
 
         Zwraca listę krotek ``(InstrumentObservation, InstrumentReading)``.
         """
@@ -155,7 +234,10 @@ class HistoryRepository:
             ]
             if not instrument_readings:
                 continue
-            latest = max(instrument_readings, key=lambda r: r.market_data_timestamp)
+            latest = max(
+                instrument_readings,
+                key=lambda r: (r.market_data_timestamp, r.revision_number),
+            )
             results.append((obs, latest))
         return results
 

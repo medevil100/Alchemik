@@ -70,6 +70,25 @@ def build_runtime_service(
     Returns:
         A fully wired RuntimeService instance.
     """
+    # --- Data sources ---
+    # Production source is dynamic Yahoo discovery. The static list is an
+    # explicit emergency variant selected only by configuration.
+    # Walidacja źródła następuje PRZED konstrukcją repozytorium SQLite, aby
+    # błędna konfiguracja nigdy nie otwierała żadnej bazy (produkcyjna
+    # alchemik_runtime.db jest otwierana wyłącznie przez jawną decyzję
+    # o budowie produkcyjnej persystencji, nigdy przez błędne argumenty).
+    from config.instrument_source import (
+        SOURCE_KIND_STATIC,
+        resolve_source_kind,
+        validate_static_tickers,
+    )
+
+    effective_kind = resolve_source_kind(source_kind)
+    if effective_kind == SOURCE_KIND_STATIC:
+        validated_tickers = validate_static_tickers(static_tickers)
+    else:
+        validated_tickers = None
+
     # --- Persistence ---
     history_repository = SQLiteHistoryRepository(
         db_path=persist_path if persist_path else None
@@ -86,24 +105,13 @@ def build_runtime_service(
 
         cycle_lock = CycleLock(_db_path_for_lock)
 
-    # --- Data sources ---
-    # Production source is dynamic Yahoo discovery. The static list is an
-    # explicit emergency variant selected only by configuration.
-    from config.instrument_source import (
-        SOURCE_KIND_STATIC,
-        resolve_source_kind,
-        validate_static_tickers,
-    )
-
     if yahoo_session is None:
         from data.yahoo.yahoo_transport import CurlCffiTransport
         from data.yahoo.yahoo_session import YahooSession
         yahoo_session = YahooSession(CurlCffiTransport())
 
-    effective_kind = resolve_source_kind(source_kind)
     if effective_kind == SOURCE_KIND_STATIC:
         from application.sources.static_instrument_source import StaticInstrumentSource
-        validated_tickers = validate_static_tickers(static_tickers)
         instrument_source = StaticInstrumentSource(validated_tickers)
     else:
         from application.sources.yahoo_discovery_source import YahooDiscoverySource

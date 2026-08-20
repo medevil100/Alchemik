@@ -4187,6 +4187,7 @@ Mapowanie wymagań kontraktu na przypadki testowe.
 | Flagi gotowości modułów | 18 | CH-READY-001 do CH-READY-021 | kompletne offline + integracja |
 | Granice odpowiedzialności | 19 | CH-BOUND-001 do CH-BOUND-013 | integracja |
 | Wpływ na Observation i Baseline | 20 | CH-BOUND-003, CH-BOUND-004, CH-BOUND-005, CH-INT-002 | integracja |
+| Model rewizji InstrumentReading (`SOURCE_REVISION_ACCEPTED`, `revision_number`, `supersedes_reading_id`, unikalność `(instrument_id, market_data_timestamp, revision_number)`) | 20 | CH-BOUND-003, CH-BOUND-004, CH-BOUND-005, CH-INT-002 | integracja + decyzja właściciela 2026-08-19 |
 | Wpływ na Technical Engine | 21 | CH-BOUND-007, CH-INT-001 | integracja |
 | Wpływ na Hunter i MasterEngine | 22 | CH-BOUND-008, CH-BOUND-009, CH-BOUND-012 | integracja |
 | Wpływ na GPT-4o i Telegram | 23 | CH-BOUND-010, CH-BOUND-011, CH-READY-020, CH-READY-021 | integracja |
@@ -4195,6 +4196,8 @@ Mapowanie wymagań kontraktu na przypadki testowe.
 | Plan kontrolowanego audytu sieciowego | 27 | CH-NET-001, CH-NET-002 | wymaga sieci |
 
 Żadne wymaganie kontraktu nie znika bez adnotacji. Wymagania zależne od otwartych decyzji są oznaczone jako zablokowane decyzją właściciela.
+
+Decyzja właściciela z 2026-08-19, wynikająca z rzeczywistego cyklu Yahoo, rozszerza KANON §13.3 pkt 9 i §13.5 pkt 12 o model rewizji InstrumentReading (wyniki domenowe `save_reading`: `ACCEPTED`, `SOURCE_REVISION_ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`; unikalność `(instrument_id, market_data_timestamp, revision_number)`) i zastępuje wcześniejszy zakaz rewizji.
 
 ---
 

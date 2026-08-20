@@ -681,9 +681,13 @@ Planowany wpływ chart na Observation i Baseline:
 - pierwszy poprawny odczyt może utworzyć trwały baseline nowej InstrumentObservation zgodnie z zatwierdzonymi zasadami kanonu;
 - walidator chart nie tworzy trwałego Observation i nie zapisuje Baseline;
 - RuntimeService pozostaje właścicielem cyklu życia Observation;
-- HistoryRepository pozostaje właścicielem kontraktu trwałego zapisu.
+- HistoryRepository pozostaje właścicielem kontraktu trwałego zapisu;
+- poprawna zmieniona treść tego samego timestampu, instrumentu, Observation i źródła jest audytowalną rewizją (`SOURCE_REVISION_ACCEPTED`) z `revision_number` i `supersedes_reading_id`, zachowującą poprzednią wersję, nie tworzącą baseline i nie kończącą Observation;
+- nowy, późniejszy timestamp rozpoczyna `revision_number=1`, jego `prev_reading_id` wskazuje efektywną wersję poprzedniego timestampu, a `supersedes_reading_id` pozostaje NULL.
 
 Dokument nie zmienia zatwierdzonych zasad granicy InstrumentReading → InstrumentObservation.
+
+Decyzja właściciela z 2026-08-19, wynikająca z rzeczywistego cyklu Yahoo, rozszerza KANON §13.3 pkt 9 i §13.5 pkt 12 o model rewizji InstrumentReading (wyniki domenowe `save_reading`: `ACCEPTED`, `SOURCE_REVISION_ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`; unikalność `(instrument_id, market_data_timestamp, revision_number)`) i zastępuje wcześniejszy zakaz rewizji.
 
 ---
 

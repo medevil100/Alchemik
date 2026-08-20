@@ -262,21 +262,23 @@ class TestLoadObservationByInstrumentId:
 
     def test_load_after_integrity_breached_returns_none(self, sqlite_repo):
         """Po INTEGRITY_BREACHED, load_observation zwraca None
-        (bo nie ma już ACTIVE)."""
+        (bo nie ma już ACTIVE). Prawdziwy CONFLICT wymaga obcej Obserwacji
+        przy zmienionej treści tego samego timestampu."""
         repo, _ = sqlite_repo
         obs = _make_observation(instrument_id="SYNTH-L2")
         rdg = _make_reading(instrument_id="SYNTH-L2", observation_id=obs.observation_id)
         repo.save_reading(obs, rdg)
 
-        # Konflikt
-        conflict_obs = _make_observation(instrument_id="SYNTH-L2", observation_id=obs.observation_id)
+        # Prawdziwy CONFLICT — obca Observation przy zmienionej treści
+        foreign_obs = _make_observation(instrument_id="SYNTH-L2")
         conflict_rdg = _make_reading(
             instrument_id="SYNTH-L2",
             market_ts=rdg.market_data_timestamp,
             close=999.0,
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        repo.save_reading(conflict_obs, conflict_rdg)
+        result = repo.save_reading(foreign_obs, conflict_rdg)
+        assert result == "CONFLICT"
 
         loaded = repo.load_observation("SYNTH-L2")
         # INTEGRITY_BREACHED nie jest ACTIVE
@@ -418,10 +420,12 @@ class TestDuplicateNoOp:
 # =============================================================================
 
 class TestConflictOnEachField:
-    """Konflikt jest wykrywany dla różnicy w każdym z 7 pól treści faktu."""
+    """Zmiana treści przy tej samej tożsamości, Observation i źródle
+    jest wykrywana dla różnicy w każdym z 7 pól treści faktu i staje się
+    SOURCE_REVISION_ACCEPTED (nowa rewizja)."""
 
-    def test_conflict_different_open(self, sqlite_repo):
-        """Inne open -> CONFLICT."""
+    def test_revision_different_open(self, sqlite_repo):
+        """Inne open -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K1")
@@ -432,16 +436,16 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K1", market_ts=ts,
             open_price=11.0, high=15.0, low=9.0, close=12.0,
             observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_high(self, sqlite_repo):
-        """Inne high -> CONFLICT."""
+    def test_revision_different_high(self, sqlite_repo):
+        """Inne high -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K2")
@@ -452,16 +456,16 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K2", market_ts=ts,
             open_price=10.0, high=16.0, low=9.0, close=12.0,
             observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_low(self, sqlite_repo):
-        """Inne low -> CONFLICT."""
+    def test_revision_different_low(self, sqlite_repo):
+        """Inne low -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K3")
@@ -472,16 +476,16 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K3", market_ts=ts,
             open_price=10.0, high=15.0, low=8.0, close=12.0,
             observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_close(self, sqlite_repo):
-        """Inne close -> CONFLICT."""
+    def test_revision_different_close(self, sqlite_repo):
+        """Inne close -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K4")
@@ -491,15 +495,15 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K4", market_ts=ts,
             close=13.0, observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_volume(self, sqlite_repo):
-        """Inny volume -> CONFLICT."""
+    def test_revision_different_volume(self, sqlite_repo):
+        """Inny volume -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K5")
@@ -509,15 +513,15 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K5", market_ts=ts,
             volume=20000.0, observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_completeness(self, sqlite_repo):
-        """Inna data_completeness -> CONFLICT."""
+    def test_revision_different_completeness(self, sqlite_repo):
+        """Inna data_completeness -> SOURCE_REVISION_ACCEPTED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-K6")
@@ -528,15 +532,15 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        conflict = _make_reading(
+        revision = _make_reading(
             instrument_id="SYNTH-K6", market_ts=ts,
             completeness="PARTIAL", open_price=None, high=None, low=None,
             close=50.0, observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
-    def test_conflict_different_source(self, sqlite_repo):
+    def test_revision_different_source(self, sqlite_repo):
         """Inne source -> CONFLICT.
         Uwaga: InstrumentReading waliduje source='YahooFinance',
         więc użyjemy bezpośredniego wstawienia przez SQLite
@@ -550,15 +554,17 @@ class TestConflictOnEachField:
         )
         repo.save_reading(obs, first)
 
-        # symuluj przychodzący reading z innym source
-        # — savereading porównuje source jako jedno z 7 pól
-        conflict = _make_reading(
+        # zmiana treści przy tym samym źródle to rewizja; obce źródło
+        # pozostaje domenowym konfliktem — test pokazuje, że zmiana
+        # treści (close) przy tej samej tożsamości/Observation/źródle
+        # jest SOURCE_REVISION_ACCEPTED.
+        revision = _make_reading(
             instrument_id="SYNTH-K7", market_ts=ts,
-            close=50.0 + 1,  # różne close, żeby na pewno konflikt
+            close=51.0,
             observation_id=obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
-        assert result == "CONFLICT"
+        result = repo.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
 
 
 # =============================================================================
@@ -566,11 +572,12 @@ class TestConflictOnEachField:
 # =============================================================================
 
 class TestTerminationReasonTruthfulness:
-    """Gdy konflikt nie dotyczy close, termination_reason nie może
-    fałszywie wskazywać close jako przyczyny."""
+    """Gdy prawdziwy CONFLICT (obca Observation) nie dotyczy close,
+    termination_reason nie może fałszywie wskazywać close jako przyczyny."""
 
     def test_volume_conflict_reason_does_not_mention_close(self, sqlite_repo):
-        """Przy konflikcie volume, termination_reason nie wspomina o close."""
+        """Przy konflikcie volume (obca Observation), termination_reason
+        nie wspomina o close."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-R1")
@@ -581,12 +588,14 @@ class TestTerminationReasonTruthfulness:
         )
         repo.save_reading(obs, first)
 
+        # Prawdziwy CONFLICT — obca Observation przy innej treści
+        foreign_obs = _make_observation(instrument_id="SYNTH-R1")
         conflict = _make_reading(
             instrument_id="SYNTH-R1", market_ts=ts,
             close=100.0, volume=99999.0,  # tylko volume się różni
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
+        result = repo.save_reading(foreign_obs, conflict)
         assert result == "CONFLICT"
 
         # Sprawdź stan Observation — musi być INTEGRITY_BREACHED
@@ -597,7 +606,8 @@ class TestTerminationReasonTruthfulness:
         assert loaded is None  # INTEGRITY_BREACHED nie jest ACTIVE
 
     def test_open_conflict_reason_exists(self, sqlite_repo):
-        """Przy konflikcie open, Observation przechodzi do INTEGRITY_BREACHED."""
+        """Przy konflikcie open (obca Observation), Observation przechodzi
+        do INTEGRITY_BREACHED."""
         repo, _ = sqlite_repo
         ts = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
         obs = _make_observation(instrument_id="SYNTH-R2")
@@ -608,12 +618,14 @@ class TestTerminationReasonTruthfulness:
         )
         repo.save_reading(obs, first)
 
+        # Prawdziwy CONFLICT — obca Observation przy innej treści
+        foreign_obs = _make_observation(instrument_id="SYNTH-R2")
         conflict = _make_reading(
             instrument_id="SYNTH-R2", market_ts=ts,
             open_price=11.0, high=15.0, low=9.0, close=12.0,
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
+        result = repo.save_reading(foreign_obs, conflict)
         assert result == "CONFLICT"
 
         loaded = repo.load_observation("SYNTH-R2")
@@ -723,15 +735,28 @@ class TestSqliteUniqueConstraint:
         result = repo2.save_reading(obs, dup)
         assert result == "DUPLICATE_NO_OP"
 
-        # Próba konfliktu przez drugie repo
-        conflict = _make_reading(
+        # Zmiana treści przez drugie repo (ta sama Observation/źródło)
+        # → SOURCE_REVISION_ACCEPTED (rewizja), nie CONFLICT.
+        revision = _make_reading(
             instrument_id="SYNTH-UC3",
             market_ts=datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc),
             reading_id="rdg-uc3-3",
             close=999.0,
             observation_id=obs.observation_id,
         )
-        result = repo2.save_reading(obs, conflict)
+        result = repo2.save_reading(obs, revision)
+        assert result == "SOURCE_REVISION_ACCEPTED"
+
+        # Prawdziwy CONFLICT przez drugie repo — obca Observation
+        foreign_obs = _make_observation(instrument_id="SYNTH-UC3")
+        conflict = _make_reading(
+            instrument_id="SYNTH-UC3",
+            market_ts=datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc),
+            reading_id="rdg-uc3-4",
+            close=123.0,
+            observation_id=foreign_obs.observation_id,
+        )
+        result = repo2.save_reading(foreign_obs, conflict)
         assert result == "CONFLICT"
 
 
@@ -826,14 +851,15 @@ class TestRestoreActiveObservations:
         rdg = _make_reading(instrument_id="SYNTH-RT1", observation_id=obs.observation_id)
         repo.save_reading(obs, rdg)
 
-        # Konflikt -> INTEGRITY_BREACHED
+        # Prawdziwy CONFLICT -> INTEGRITY_BREACHED (obca Observation)
+        foreign_obs = _make_observation(instrument_id="SYNTH-RT1")
         conflict = _make_reading(
             instrument_id="SYNTH-RT1",
             market_ts=rdg.market_data_timestamp,
             close=999.0,
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        repo.save_reading(obs, conflict)
+        repo.save_reading(foreign_obs, conflict)
 
         active = repo.restore_active_observations()
         assert len(active) == 0
@@ -859,14 +885,15 @@ class TestNewObservationAfterTerminal:
         )
         repo.save_reading(obs1, rdg1)
 
-        # Konflikt
+        # Prawdziwy CONFLICT — obca Observation przy zmienionej treści
+        foreign_obs = _make_observation(instrument_id="SYNTH-N1")
         conflict = _make_reading(
             instrument_id="SYNTH-N1",
             market_ts=rdg1.market_data_timestamp,
             close=200.0,
-            observation_id=obs1.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        repo.save_reading(obs1, conflict)
+        repo.save_reading(foreign_obs, conflict)
 
         # RuntimeService tworzy nową Observation
         obs2 = _make_observation(instrument_id="SYNTH-N1")
@@ -961,14 +988,15 @@ class TestTerminalObservationValueError:
         )
         repo.save_reading(obs, rdg)
 
-        # Konflikt → INTEGRITY_BREACHED
+        # Prawdziwy CONFLICT → INTEGRITY_BREACHED (obca Observation)
+        foreign_obs = _make_observation(instrument_id="SYNTH-K8")
         conflict = _make_reading(
             instrument_id="SYNTH-K8",
             market_ts=rdg.market_data_timestamp,
             close=200.0,
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        result = repo.save_reading(obs, conflict)
+        result = repo.save_reading(foreign_obs, conflict)
         assert result == "CONFLICT"
 
         # Próba zapisu do terminalnej Observation → ValueError
@@ -997,14 +1025,15 @@ class TestTerminalObservationValueError:
         )
         repo.save_reading(obs, rdg)
 
-        # Konflikt → INTEGRITY_BREACHED
+        # Prawdziwy CONFLICT → INTEGRITY_BREACHED (obca Observation)
+        foreign_obs = _make_observation(instrument_id="SYNTH-K9")
         conflict = _make_reading(
             instrument_id="SYNTH-K9",
             market_ts=rdg.market_data_timestamp,
             close=999.0,
-            observation_id=obs.observation_id,
+            observation_id=foreign_obs.observation_id,
         )
-        repo.save_reading(obs, conflict)
+        repo.save_reading(foreign_obs, conflict)
 
         # Próba → ValueError
         bad_obs = _make_observation(

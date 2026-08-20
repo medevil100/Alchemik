@@ -395,7 +395,7 @@ Następujące zasady zostały zatwierdzone przez właściciela 08.08.2026 po kor
 
 7. Fizyczna kolizja globalnej tożsamości Readingu `(instrument_id, market_data_timestamp)` jest rozpoznawana po naruszeniu `idx_readings_identity`. Po wycofaniu transakcji (`rollback`) istniejący rekord jest ponownie odczytywany: identyczna treść siedmiu pól daje `DUPLICATE_NO_OP`, różna treść daje `CONFLICT`. Brak rekordu przy ponownym odczycie jest błędem technicznym — propagowany jest oryginalny `sqlite3.IntegrityError`, bez zwracania `CONFLICT` i bez terminalizacji Observation.
 8. Każdy inny `sqlite3.IntegrityError`, `OperationalError` lub błąd trwałości jest przekazywany do wywołującego jako wyjątek techniczny po jawnym `rollback`. Nie jest maskowany jako `CONFLICT`. Nie dodaje się nowych statusów domenowych do jego obsługi.
-9. Cztery wyniki domenowe `save_reading` pozostają wyłącznie: `ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`. Żaden piąty wynik nie jest wprowadzany. `ValueError` jest wyjątkiem, nie wynikiem domenowym.
+9. Dozwolone wyniki domenowe `save_reading` (po decyzji właściciela z 2026-08-19): `ACCEPTED`, `SOURCE_REVISION_ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`. `SOURCE_REVISION_ACCEPTED` oznacza poprawną, audytowalną rewizję danych tego samego timestampu, instrumentu, Observation i źródła. `ValueError` jest wyjątkiem, nie wynikiem domenowym. Decyzja wynika z rzeczywistego cyklu Yahoo i zastępuje wcześniejszy zakaz wprowadzania piątego wyniku.
 
 ### 13.4 Atomowość zapisu Readingu i Observation
 
@@ -404,7 +404,7 @@ Następujące zasady zostały zatwierdzone przez właściciela 08.08.2026 po kor
 
 ### 13.5 Globalna unikalność tożsamości Readingu
 
-12. Fizyczne wymuszenie `UNIQUE` na `(instrument_id, market_data_timestamp)` przez `CREATE UNIQUE INDEX idx_readings_identity` jest obowiązujące. Nie wystarcza samo sprawdzenie aplikacyjne.
+12. Fizyczne wymuszenie `UNIQUE` na `(instrument_id, market_data_timestamp, revision_number)` przez `CREATE UNIQUE INDEX idx_readings_identity` jest obowiązujące. Kilka wersji tego samego timestampu jest dozwolone wyłącznie jako uporządkowany łańcuch rewizji. Decyzja właściciela z 2026-08-19, wynikająca z rzeczywistego cyklu Yahoo, zastępuje wcześniejszy zapis wymagający wyłącznie `(instrument_id, market_data_timestamp)`. Nie wystarcza samo sprawdzenie aplikacyjne.
 
 ### 13.6 Zakres niewdrożony
 
@@ -465,8 +465,8 @@ Następujące zasady zostały zatwierdzone przez właściciela 09.08.2026 i prze
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026
-Data aktualizacji: 09.08.2026
-Wersja: 1.3
-Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12), zabezpieczenia trwałości (§13) oraz granicy RuntimeService → InstrumentObservation (§14) zatwierdzone przez właściciela 08–09.08.2026. Pozostałe treści pozostają proponowane.
+Data aktualizacji: 19.08.2026
+Wersja: 1.4
+Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12), zabezpieczenia trwałości (§13) oraz granicy RuntimeService → InstrumentObservation (§14) zatwierdzone przez właściciela 08–09.08.2026. Model rewizji InstrumentReading oraz wyniki `save_reading` zatwierdzone przez właściciela 19.08.2026 (decyzja wynikająca z rzeczywistego cyklu Yahoo, zastępująca wcześniejszy zakaz rewizji). Pozostałe treści pozostają proponowane.
 
 Kanon zmienia się wyłącznie po jawnej decyzji właściciela. Zatwierdzone zasady §12, §13 i §14 są obowiązujące; pozostałe sekcje pozostają proponowane do czasu akceptacji właściciela.

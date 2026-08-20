@@ -82,7 +82,7 @@ class SQLiteHistoryRepository:
         CREATE INDEX IF NOT EXISTS idx_market_events_cycle_id ON market_events(cycle_id);
         CREATE INDEX IF NOT EXISTS idx_market_events_ticker ON market_events(ticker);
         CREATE INDEX IF NOT EXISTS idx_market_events_created ON market_events(created_at);
-        CREATE INDEX IF NOT EXISTS idx_market_events_event_id ON market_events(event_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_market_events_event_id ON market_events(event_id);
 
         CREATE TABLE IF NOT EXISTS event_outcomes (
             event_outcome_id TEXT PRIMARY KEY,
@@ -163,11 +163,13 @@ class SQLiteHistoryRepository:
             source TEXT NOT NULL DEFAULT 'YahooFinance',
             prev_reading_id TEXT,
             data_completeness TEXT NOT NULL DEFAULT 'COMPLETE',
+            revision_number INTEGER NOT NULL DEFAULT 1,
+            supersedes_reading_id TEXT,
             FOREIGN KEY (observation_id) REFERENCES instrument_observations(observation_id)
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_identity
-            ON instrument_readings(instrument_id, market_data_timestamp);
+            ON instrument_readings(instrument_id, market_data_timestamp, revision_number);
 
         CREATE INDEX IF NOT EXISTS idx_readings_observation
             ON instrument_readings(observation_id);
@@ -288,6 +290,8 @@ class SQLiteHistoryRepository:
         # Run migration to add signal_timing column (idempotent)
         self._migrate_signal_timing()
         self._migrate_universe_registry()
+        self._migrate_reading_revisions()
+        self._migrate_event_outcome_fk()
 
     def _column_exists(self, cursor, table: str, column: str) -> bool:
         """Check whether *column* already exists in *table*."""
@@ -367,6 +371,128 @@ class SQLiteHistoryRepository:
                                WHERE snapshot_id = ? AND symbol = ?""",
                             (status, snapshot_id, symbol),
                         )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _migrate_reading_revisions(self) -> None:
+        """Transakcyjna, idempotentna migracja instrument_readings do modelu rewizji.
+
+        - dodaje revision_number (INTEGER NOT NULL DEFAULT 1) oraz
+          supersedes_reading_id (TEXT);
+        - istniejące rekordy otrzymują revision 1 oraz supersedes NULL;
+        - przebudowuje unikalny indeks idx_readings_identity na
+          (instrument_id, market_data_timestamp, revision_number);
+        - rollback przy błędzie; żadnego DELETE ani nadpisywania wersji.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            if not self._column_exists(cursor, "instrument_readings", "revision_number"):
+                cursor.execute(
+                    "ALTER TABLE instrument_readings ADD COLUMN "
+                    "revision_number INTEGER NOT NULL DEFAULT 1"
+                )
+            if not self._column_exists(cursor, "instrument_readings", "supersedes_reading_id"):
+                cursor.execute(
+                    "ALTER TABLE instrument_readings ADD COLUMN "
+                    "supersedes_reading_id TEXT"
+                )
+
+            # Istniejące rekordy -> revision 1, supersedes NULL
+            cursor.execute(
+                "UPDATE instrument_readings "
+                "SET revision_number = 1, supersedes_reading_id = NULL "
+                "WHERE revision_number IS NULL OR revision_number < 1"
+            )
+
+            # Przebudowa unikalnego indeksu tożsamości na identity + revision
+            cursor.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_readings_identity'"
+            )
+            row = cursor.fetchone()
+            if row is not None and "revision_number" not in (row[0] or ""):
+                cursor.execute("DROP INDEX idx_readings_identity")
+            cursor.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_identity
+                   ON instrument_readings(instrument_id, market_data_timestamp, revision_number)"""
+            )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _migrate_event_outcome_fk(self) -> None:
+        """Idempotentna migracja FK EventOutcome -> MarketEvent.
+
+        - zapewnia jednoznaczny UNIQUE na market_events.event_id (wymagany
+          przez FK event_outcomes.market_event_id REFERENCES
+          market_events(event_id));
+        - przed utworzeniem UNIQUE sprawdza duplikaty event_id — jeżeli
+          istnieją, przerywa migrację jawnym błędem (RuntimeError) i wykonuje
+          rollback, nie zmieniając danych;
+        - ewentualny stary nieunikalny indeks idx_market_events_event_id jest
+          bezpiecznie zastępowany indeksem UNIQUE o tej samej nazwie;
+        - nie usuwa, nie łączy i nie zmienia wartości event_id;
+        - ponowne otwarcie jest idempotentne.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            # 1. Czy istnieje już UNIQUE na event_id?
+            cursor.execute("PRAGMA index_list(market_events)")
+            unique_exists = False
+            old_index_exists = False
+            for row in cursor.fetchall():
+                index_name = row[1]
+                is_unique = bool(row[2])
+                cursor.execute(f"PRAGMA index_info({index_name})")
+                columns = [info[2] for info in cursor.fetchall()]
+                if "event_id" in columns:
+                    if is_unique:
+                        unique_exists = True
+                    if index_name == "idx_market_events_event_id":
+                        old_index_exists = True
+
+            if unique_exists:
+                conn.commit()
+                return
+
+            # 2. Sprawdź duplikaty event_id
+            cursor.execute(
+                """SELECT event_id, COUNT(*)
+                   FROM market_events
+                   GROUP BY event_id
+                   HAVING COUNT(*) > 1"""
+            )
+            duplicates = cursor.fetchall()
+            if duplicates:
+                duplicate_list = ", ".join(repr(row[0]) for row in duplicates)
+                raise RuntimeError(
+                    "Migration FK event_outcomes -> market_events: duplicate "
+                    f"market_events.event_id found ({duplicate_list}); cannot "
+                    "create UNIQUE index. Migration aborted, no data changed."
+                )
+
+            # 3. Zastąp stary nieunikalny indeks indeksem UNIQUE
+            if old_index_exists:
+                cursor.execute("DROP INDEX idx_market_events_event_id")
+            cursor.execute(
+                """CREATE UNIQUE INDEX idx_market_events_event_id
+                   ON market_events(event_id)"""
+            )
+
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1441,9 +1567,10 @@ class SQLiteHistoryRepository:
         conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO event_outcomes (
+                INSERT INTO event_outcomes (
                     event_outcome_id, market_event_id, state, ticker, market,
                     detection_timestamp, base_price, base_volume,
                     event_family, event_type, quality_level,
@@ -1451,6 +1578,26 @@ class SQLiteHistoryRepository:
                     horizons_skipped, missing_horizons_json, created_at,
                     rule_version, failure_reason, invalid_reason
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_outcome_id) DO UPDATE SET
+                    market_event_id = excluded.market_event_id,
+                    state = excluded.state,
+                    ticker = excluded.ticker,
+                    market = excluded.market,
+                    detection_timestamp = excluded.detection_timestamp,
+                    base_price = excluded.base_price,
+                    base_volume = excluded.base_volume,
+                    event_family = excluded.event_family,
+                    event_type = excluded.event_type,
+                    quality_level = excluded.quality_level,
+                    expected_horizons = excluded.expected_horizons,
+                    horizons_calculated = excluded.horizons_calculated,
+                    horizons_failed = excluded.horizons_failed,
+                    horizons_skipped = excluded.horizons_skipped,
+                    missing_horizons_json = excluded.missing_horizons_json,
+                    created_at = excluded.created_at,
+                    rule_version = excluded.rule_version,
+                    failure_reason = excluded.failure_reason,
+                    invalid_reason = excluded.invalid_reason
                 """,
                 (
                     event_outcome.event_outcome_id,
@@ -1783,13 +1930,19 @@ class SQLiteHistoryRepository:
 
     def save_reading(self, observation, reading) -> str:
         """
-        Atomowo zapisz InstrumentObservation i InstrumentReading.
+        Atomowo zapisz InstrumentObservation i InstrumentReading z obsługą rewizji.
 
-        Otrzymuje istniejącą lub nowo utworzoną Observation (pierwszy argument)
-        oraz Reading (drugi argument). Repozytorium zapisuje oba atomowo;
-        nie tworzy Observation samodzielnie.
-
-        Returns one of: ACCEPTED, DUPLICATE_NO_OP, CONFLICT, STALE_TIMESTAMP.
+        Wyniki:
+          * ACCEPTED                 — nowy timestamp, revision 1, supersedes NULL;
+          * DUPLICATE_NO_OP          — identyczny timestamp i treść (bez zmian);
+          * SOURCE_REVISION_ACCEPTED — ta sama tożsamość/źródło/Observation przy
+                                       zmienionej treści → nowa rewizja
+                                       (revision_number = najwyższa + 1,
+                                        supersedes_reading_id = zastępowana wersja);
+          * CONFLICT                 — obca tożsamość, uszkodzone supersedes albo
+                                       prawdziwy konflikt treści
+                                       (Observation → INTEGRITY_BREACHED);
+          * STALE_TIMESTAMP          — starszy timestamp, odrzucony bez naruszenia.
         """
         instrument_id = observation.instrument_id
         observation_id = observation.observation_id
@@ -1797,12 +1950,16 @@ class SQLiteHistoryRepository:
         market_ts_iso = market_ts.isoformat()
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        # Obca tożsamość instrumentu → CONFLICT (nie jest rewizją)
+        if reading.instrument_id != instrument_id:
+            return "CONFLICT"
+
         conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
 
-            # 0. Check if the observation already exists in a terminal state
+            # 0. Terminalna Observation → ValueError (dotychczasowe zachowanie)
             cursor.execute(
                 "SELECT state FROM instrument_observations WHERE observation_id=?",
                 (observation_id,),
@@ -1815,20 +1972,23 @@ class SQLiteHistoryRepository:
                     f"Cannot add reading to terminal observation {observation_id}"
                 )
 
-            # 1. Check if there is an existing reading for this identity
+            # 1. Istniejąca najnowsza wersja dla tej tożsamości
             cursor.execute(
-                """SELECT r.reading_id, r.open, r.high, r.low, r.close, r.volume,
-                          r.data_completeness, r.source
-                   FROM instrument_readings r
-                   WHERE r.instrument_id = ? AND r.market_data_timestamp = ?
+                """SELECT reading_id, open, high, low, close, volume,
+                          data_completeness, source, observation_id, revision_number,
+                          supersedes_reading_id
+                   FROM instrument_readings
+                   WHERE instrument_id = ? AND market_data_timestamp = ?
+                   ORDER BY revision_number DESC
                    LIMIT 1""",
                 (instrument_id, market_ts_iso),
             )
             existing = cursor.fetchone()
 
             if existing is not None:
-                existing_rdg_id, ex_open, ex_high, ex_low, ex_close, ex_volume, \
-                    ex_completeness, ex_source = existing
+                (ex_rdg_id, ex_open, ex_high, ex_low, ex_close, ex_volume,
+                 ex_completeness, ex_source, ex_obs_id, ex_revision,
+                 ex_supersedes) = existing
 
                 same_content = (
                     (reading.open == ex_open) and
@@ -1840,24 +2000,60 @@ class SQLiteHistoryRepository:
                     (reading.source == ex_source)
                 )
 
+                reference = reading.supersedes_reading_id
+                valid_ref = (
+                    reference is None
+                    or reference == ex_rdg_id
+                )
+
                 if same_content:
-                    return "DUPLICATE_NO_OP"
-                else:
-                    # Conflict: atomically terminate ACTIVE observation for this instrument
-                    cursor.execute(
-                        """UPDATE instrument_observations
-                           SET state = 'INTEGRITY_BREACHED',
-                               terminated_at = ?,
-                               termination_reason = ?
-                           WHERE instrument_id = ? AND state = 'ACTIVE'""",
-                        (
-                            now_iso,
-                            f"Content conflict at {market_ts_iso}",
-                            instrument_id,
-                        ),
+                    # Identyczna treść — rewizja niepotrzebna; uszkodzone
+                    # supersedes przy identycznej treści = CONFLICT.
+                    return "DUPLICATE_NO_OP" if valid_ref else "CONFLICT"
+
+                # Zmieniona treść tego samego timestampu.
+                if (reading.observation_id != ex_obs_id) or (reading.source != ex_source):
+                    # Obca Observation albo obce źródło → prawdziwy CONFLICT.
+                    self._terminate_observation_on_conflict(
+                        cursor, instrument_id, market_ts_iso, now_iso,
                     )
                     conn.commit()
                     return "CONFLICT"
+
+                if not valid_ref:
+                    # Uszkodzone supersedes przy zmienionej treści → CONFLICT.
+                    return "CONFLICT"
+
+                # Poprawna rewizja źródła: ta sama tożsamość, Observation i źródło.
+                new_revision = ex_revision + 1
+                cursor.execute(
+                    """INSERT INTO instrument_readings
+                       (reading_id, observation_id, instrument_id,
+                        market_data_timestamp, scan_timestamp,
+                        open, high, low, close, volume,
+                        source, prev_reading_id, data_completeness,
+                        revision_number, supersedes_reading_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        reading.reading_id,
+                        observation_id,
+                        instrument_id,
+                        market_ts_iso,
+                        reading.scan_timestamp.isoformat(),
+                        reading.open,
+                        reading.high,
+                        reading.low,
+                        reading.close,
+                        reading.volume,
+                        reading.source,
+                        ex_rdg_id,
+                        reading.data_completeness,
+                        new_revision,
+                        ex_rdg_id,
+                    ),
+                )
+                conn.commit()
+                return "SOURCE_REVISION_ACCEPTED"
 
             # 2. STALE_TIMESTAMP check
             cursor.execute(
@@ -1871,12 +2067,13 @@ class SQLiteHistoryRepository:
             if last_row is not None and market_ts_iso < last_row[0]:
                 return "STALE_TIMESTAMP"
 
-            # 3. Determine prev_reading_id (only within the current observation)
+            # 3. prev_reading_id — najnowsza rewizja najnowszego timestampu
+            #    wyłącznie w obrębie bieżącej Observation (kontrakt KROK 5).
             prev_reading_id = None
             cursor.execute(
                 """SELECT reading_id FROM instrument_readings
                    WHERE instrument_id = ? AND observation_id = ?
-                   ORDER BY market_data_timestamp DESC
+                   ORDER BY market_data_timestamp DESC, revision_number DESC
                    LIMIT 1""",
                 (instrument_id, observation_id),
             )
@@ -1884,8 +2081,7 @@ class SQLiteHistoryRepository:
             if last_rdg is not None:
                 prev_reading_id = last_rdg[0]
 
-            # 4. Insert observation using non-destructive logic
-            # 4. Non-destructive observation insert
+            # 4. Observation (non-destructive)
             cursor.execute(
                 "SELECT observation_id, instrument_id, state "
                 "FROM instrument_observations WHERE observation_id=?",
@@ -1897,26 +2093,19 @@ class SQLiteHistoryRepository:
             else:
                 ex_obs_id, ex_instr_id, ex_state = existing_obs
                 if ex_state in ("INTEGRITY_BREACHED", "TERMINATED_DOMAIN", "TERMINATED_TECHNICAL"):
-                    raise ValueError(
-                        f"Cannot add reading to terminal observation {observation_id}"
-                    )
+                    return "CONFLICT"
                 if ex_instr_id != instrument_id:
-                    raise ValueError(
-                        f"Observation {observation_id} belongs to instrument {ex_instr_id}, "
-                        f"not {instrument_id}"
-                    )
-                if ex_state == "ACTIVE" and ex_obs_id == observation_id:
-                    # Same observation, same instrument — proceed without re-inserting
-                    pass
+                    return "CONFLICT"
 
-            # 5. Insert the reading
+            # 5. Nowy fakt — revision 1, supersedes NULL
             cursor.execute(
                 """INSERT INTO instrument_readings
                    (reading_id, observation_id, instrument_id,
                     market_data_timestamp, scan_timestamp,
                     open, high, low, close, volume,
-                    source, prev_reading_id, data_completeness)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source, prev_reading_id, data_completeness,
+                    revision_number, supersedes_reading_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     reading.reading_id,
                     observation_id,
@@ -1931,6 +2120,8 @@ class SQLiteHistoryRepository:
                     reading.source,
                     prev_reading_id,
                     reading.data_completeness,
+                    1,
+                    None,
                 ),
             )
 
@@ -1945,7 +2136,7 @@ class SQLiteHistoryRepository:
                 raise ValueError(
                     f"Cannot create second ACTIVE observation for instrument {instrument_id}"
                 )
-            # UNIQUE constraint on reading identity → classify
+            # UNIQUE constraint on reading identity → classify (wyścig)
             if "idx_readings_identity" in err_msg:
                 conn.rollback()
                 return self._handle_identity_conflict(
@@ -1956,6 +2147,17 @@ class SQLiteHistoryRepository:
             raise
         finally:
             conn.close()
+
+    def _terminate_observation_on_conflict(self, cursor, instrument_id, market_ts_iso, now_iso):
+        """Atomowo zakończ ACTIVE Observation instrumentu w CONFLICT."""
+        cursor.execute(
+            """UPDATE instrument_observations
+               SET state = 'INTEGRITY_BREACHED',
+                   terminated_at = ?,
+                   termination_reason = ?
+               WHERE instrument_id = ? AND state = 'ACTIVE'""",
+            (now_iso, f"Content conflict at {market_ts_iso}", instrument_id),
+        )
 
     def _insert_observation(self, cursor, observation, now_iso):
         """Insert a new observation. Raises ValueError if INSERT fails
@@ -2080,7 +2282,8 @@ class SQLiteHistoryRepository:
                           r.reading_id, r.instrument_id, r.market_data_timestamp,
                           r.scan_timestamp, r.open, r.high, r.low, r.close,
                           r.volume, r.source, r.prev_reading_id,
-                          r.data_completeness
+                          r.data_completeness, r.revision_number,
+                          r.supersedes_reading_id
                    FROM instrument_observations o
                    JOIN instrument_readings r ON r.observation_id = o.observation_id
                    WHERE o.state = 'ACTIVE'
@@ -2088,6 +2291,12 @@ class SQLiteHistoryRepository:
                          SELECT MAX(r2.market_data_timestamp)
                          FROM instrument_readings r2
                          WHERE r2.observation_id = o.observation_id
+                     )
+                     AND r.revision_number = (
+                         SELECT MAX(r3.revision_number)
+                         FROM instrument_readings r3
+                         WHERE r3.observation_id = o.observation_id
+                           AND r3.market_data_timestamp = r.market_data_timestamp
                      )
                    ORDER BY o.instrument_id""",
             )
@@ -2117,6 +2326,8 @@ class SQLiteHistoryRepository:
                     source=row[15],
                     prev_reading_id=row[16],
                     data_completeness=row[17],
+                    revision_number=row[18],
+                    supersedes_reading_id=row[19],
                 )
 
                 results.append((obs, reading))

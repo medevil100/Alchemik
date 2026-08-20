@@ -44,6 +44,9 @@ class InstrumentReading:
 
     data_completeness: str = "COMPLETE"
 
+    revision_number: int = 1
+    supersedes_reading_id: Optional[str] = None
+
     _initialized: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
@@ -97,6 +100,7 @@ class InstrumentReading:
             "market_data_timestamp", "scan_timestamp",
             "open", "high", "low", "close", "volume",
             "source", "prev_reading_id", "data_completeness",
+            "revision_number", "supersedes_reading_id",
         ):
             raise AttributeError(f"{name} is immutable")
 
