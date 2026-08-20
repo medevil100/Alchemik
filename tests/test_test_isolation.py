@@ -30,9 +30,6 @@ PRODUCTION_DB = (
     / "runtime"
     / "alchemik_runtime.db"
 )
-EXPECTED_PRODUCTION_SHA256 = (
-    "ca2b8d03bdbb0221dc2d2431b3894ccdeaa2f56251fa0bc9443548919fa867fb"
-)
 
 
 def _sha256(path: Path) -> str:
@@ -41,6 +38,15 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _file_state(path: Path):
+    """Stan pliku bez otwierania SQLite: (czy istnieje, rozmiar albo None,
+    SHA-256 albo None). Dynamiczny — niezależny od legalnej wersji
+    schematu i zawartości produkcyjnej bazy."""
+    if not path.exists():
+        return (False, None, None)
+    return (True, path.stat().st_size, _sha256(path))
 
 
 class FakeSession:
@@ -64,8 +70,7 @@ class FakeSession:
 def test_composition_root_and_real_sqlite_use_only_temp_db(tmp_path):
     """GREEN: composition root w teście buduje prawdziwe SQLite repozytorium
     na jawnej tymczasowej ścieżce; produkcyjna baza pozostaje nietknięta."""
-    assert PRODUCTION_DB.exists()
-    sha_before = _sha256(PRODUCTION_DB)
+    state_before = _file_state(PRODUCTION_DB)
 
     temp_db = tmp_path / "isolation_contract.db"
     runtime = entrypoint.build_runtime_service(
@@ -93,9 +98,10 @@ def test_composition_root_and_real_sqlite_use_only_temp_db(tmp_path):
     assert stored is not None
     assert stored["cycle_id"] == "isolation_probe"
 
-    # Produkcyjna baza nie jest modyfikowana — SHA przed i po identyczny.
-    sha_after = _sha256(PRODUCTION_DB)
-    assert sha_before == sha_after == EXPECTED_PRODUCTION_SHA256
+    # Produkcyjna baza nie jest modyfikowana — pełny stan pliku
+    # (istnienie, rozmiar, SHA-256) przed i po identyczny.
+    state_after = _file_state(PRODUCTION_DB)
+    assert state_before == state_after
 
 
 def test_static_validation_precedes_any_db_open():
