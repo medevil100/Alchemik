@@ -579,3 +579,36 @@ class TestSafetyAndSerialization:
         counters = trace.get("counters", {})
         assert counters.get("retry_count", 0) == 0
         assert counters.get("fallback_count", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Krok 7B — nowy kontrakt: dokładnie jedno run_cycle() + kontrolne GUI
+# ---------------------------------------------------------------------------
+
+class TestStep7BControlledContract:
+    def test_controlled_validation_delegates_to_exactly_one_run_cycle(
+        self, tmp_path
+    ):
+        """Kontroler wywołuje dokładnie jedno RuntimeService.run_cycle().
+
+        Nie zastępujemy RuntimeService mockiem — używamy prawdziwego cyklu
+        i sprawdzamy, że istniała tylko jedna wykonywana logika runtime (poprzez
+        statyczną kontrolę pojedynczego miejsca wywołania w kontrolerze).
+        """
+        import inspect
+        from application.controlled_validation import ControlledValidationController
+        source = inspect.getsource(ControlledValidationController.run)
+        # Docstring wspomina run_cycle() (RuntimeService.run_cycle()), ale
+        # rzeczywiste wywołanie metody to dokładnie jedno runtime.run_cycle().
+        assert source.count("runtime.run_cycle()") == 1
+
+    def test_controlled_stage_statuses_exist(self):
+        from application import cycle_trace as ct
+        from application.controlled_validation import CONTROLLED_STAGE_ORDER
+        assert ct.EXECUTED in ct.DIAGNOSTIC_STATUSES
+        assert ct.BLOCKED_BY_BUDGET in ct.DIAGNOSTIC_STATUSES
+        assert ct.NATURAL_PIPELINE_STOP in ct.DIAGNOSTIC_STATUSES
+        assert "preflight" in CONTROLLED_STAGE_ORDER
+        assert "controlled_overlay" in CONTROLLED_STAGE_ORDER
+        assert "cycle_persistence" in CONTROLLED_STAGE_ORDER
+        assert "final_database_check" in CONTROLLED_STAGE_ORDER

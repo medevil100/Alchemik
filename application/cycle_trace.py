@@ -31,9 +31,15 @@ PARTIAL = "PARTIAL"
 FAILED = "FAILED"
 SKIPPED = "SKIPPED"
 EXECUTED_EMPTY = "EXECUTED_EMPTY"
+# Addytywne statusy kontrolne trybu CONTROLLED_VALIDATION_ONLY (Krok 7B/8).
+# Nie zmieniają znaczenia istniejących statusów normalnego cyklu.
+EXECUTED = "EXECUTED"
+BLOCKED_BY_BUDGET = "BLOCKED_BY_BUDGET"
+NATURAL_PIPELINE_STOP = "NATURAL_PIPELINE_STOP"
 
 DIAGNOSTIC_STATUSES = frozenset({
     NOT_STARTED, SUCCESS, PARTIAL, FAILED, SKIPPED, EXECUTED_EMPTY,
+    EXECUTED, BLOCKED_BY_BUDGET, NATURAL_PIPELINE_STOP,
 })
 
 # Wymagana kolejność etapów śladu (pkt 7 zadania).
@@ -55,6 +61,36 @@ STAGE_ORDER: List[str] = [
     "alert_build",
     "alert_dispatch",
     "telegram",
+]
+
+# Osobna, addytywna lista etapów kontrolnych trybu CONTROLLED_VALIDATION_ONLY
+# (Krok 7B/8). Nie modyfikuje istniejącej STAGE_ORDER normalnego cyklu.
+CONTROLLED_STAGE_ORDER: List[str] = [
+    "preflight",
+    "discovery",
+    "symbol_selection",
+    "daily",
+    "intraday",
+    "controlled_overlay",
+    "chart_validation",
+    "reading_persistence",
+    "baseline_comparison",
+    "hunter",
+    "technical",
+    "master",
+    "market_event",
+    "tavily",
+    "openai",
+    "ai_result",
+    "ranking",
+    "risk",
+    "analyst",
+    "final_analysis",
+    "alert_builder",
+    "alert_dispatcher",
+    "telegram",
+    "cycle_persistence",
+    "final_database_check",
 ]
 
 # ---------------------------------------------------------------------------
@@ -213,7 +249,11 @@ def new_instrument_entry(symbol: str) -> Dict[str, Any]:
     }
 
 
-def new_trace(cycle_id: Optional[str] = None, started_at_utc: Optional[str] = None) -> Dict[str, Any]:
+def new_trace(
+    cycle_id: Optional[str] = None,
+    started_at_utc: Optional[str] = None,
+    stage_order: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """Utwórz świeży, pusty ślad cyklu.
 
     Każda instancja śladu dostaje nowy ``cycle_id`` (nie dziedziczy danych
@@ -224,6 +264,7 @@ def new_trace(cycle_id: Optional[str] = None, started_at_utc: Optional[str] = No
     if started_at_utc is None:
         started_at_utc = datetime.now(timezone.utc).isoformat()
 
+    ordered = stage_order or STAGE_ORDER
     return {
         "schema_version": SCHEMA_VERSION,
         "cycle_id": cycle_id,
@@ -231,7 +272,7 @@ def new_trace(cycle_id: Optional[str] = None, started_at_utc: Optional[str] = No
         "ended_at_utc": None,
         "duration_ms": None,
         "overall_status": NOT_STARTED,
-        "stages": {name: _new_stage(name) for name in STAGE_ORDER},
+        "stages": {name: _new_stage(name) for name in ordered},
         "instruments": {},
         "counters": {
             "instruments_total": 0,
@@ -264,9 +305,16 @@ class CycleTraceRecorder:
     ``trace`` tworzonym per ``run_cycle()``.
     """
 
-    def __init__(self, cycle_id: Optional[str] = None, clock=None) -> None:
+    def __init__(
+        self,
+        cycle_id: Optional[str] = None,
+        clock=None,
+        stage_order: Optional[List[str]] = None,
+    ) -> None:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self.trace = new_trace(cycle_id=cycle_id, started_at_utc=self._now_iso())
+        self.trace = new_trace(
+            cycle_id=cycle_id, started_at_utc=self._now_iso(), stage_order=stage_order
+        )
 
     # -- czas -----------------------------------------------------------------
     def _now_iso(self) -> str:
@@ -286,9 +334,12 @@ class CycleTraceRecorder:
     _STATUS_SEVERITY = {
         NOT_STARTED: 0,
         SKIPPED: 1,
+        NATURAL_PIPELINE_STOP: 1,
         SUCCESS: 2,
+        EXECUTED: 2,
         PARTIAL: 3,
         FAILED: 4,
+        BLOCKED_BY_BUDGET: 4,
     }
 
     def stage_end(

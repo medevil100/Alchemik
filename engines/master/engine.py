@@ -589,7 +589,18 @@ class MasterEngine:
                 "volume_data": ev.volume_data.to_dict() if ev.volume_data else None,
             })
 
-        return {
+        # Krok 7C — nośnik trajektorii 1h do granicy OpenAI. Wartość pochodzi
+        # wiernie z MarketEvent.ai_context["candle_trajectory_1h"] bez utraty
+        # danych; dokładnie jeden dodatkowy klucz w payloadzie. Żadnych
+        # interpretacji BUY/SELL, progów ani rekomendacji.
+        candle_trajectory_1h = None
+        for ev in market_events:
+            ai_ctx = getattr(ev, "ai_context", None)
+            if isinstance(ai_ctx, dict) and "candle_trajectory_1h" in ai_ctx:
+                candle_trajectory_1h = ai_ctx["candle_trajectory_1h"]
+                break
+
+        payload = {
             "symbol": symbol,
             "market": market,
             "instrument_type": instrument_type.value,
@@ -603,6 +614,9 @@ class MasterEngine:
             "detected_events": events_out,
             "data_completeness": data_completeness,
         }
+        if candle_trajectory_1h is not None:
+            payload["candle_trajectory_1h"] = candle_trajectory_1h
+        return payload
 
     # ------------------------------------------------------------------
     # AI result conversion (Punkt 4 — real AI boundary)
@@ -672,6 +686,7 @@ class MasterEngine:
         events_out: Optional[List[MarketEvent]] = None,
         ohlcv_data: Optional[List[MarketData]] = None,
         trace=None,
+        trajectory_context: Optional[dict] = None,
     ) -> FinalAnalysisResult:
         """
         Execute the full analysis pipeline for a single instrument.
@@ -755,6 +770,18 @@ class MasterEngine:
             run_news = False
             run_ai_for_any = False
             decisions_map = {}
+
+        # Krok 7C — dołącz wierny kontekst trajektorii świecy 1h do ai_context
+        # każdego MarketEvent (bez nadpisywania istniejącego ai_context).
+        # Wartość pochodzi z RuntimeService i jest przekazywana dalej do
+        # payloadu OpenAI dokładnie jako klucz candle_trajectory_1h.
+        if trajectory_context and market_events:
+            for ev in market_events:
+                ai_context = getattr(ev, "ai_context", None)
+                if ai_context is None:
+                    ai_context = {}
+                    ev.ai_context = ai_context
+                ai_context["candle_trajectory_1h"] = trajectory_context
 
         # Pass events to caller via the optional output list
         if events_out is not None and market_events:

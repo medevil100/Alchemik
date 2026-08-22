@@ -52,6 +52,7 @@ def build_runtime_service(
     yahoo_session=None,
     source_kind: str = None,
     static_tickers=None,
+    controlled_source=None,
 ) -> RuntimeService:
     """
     Build and wire a production RuntimeService with SQLite persistence.
@@ -110,7 +111,13 @@ def build_runtime_service(
         from data.yahoo.yahoo_session import YahooSession
         yahoo_session = YahooSession(CurlCffiTransport())
 
-    if effective_kind == SOURCE_KIND_STATIC:
+    # Addytywny tryb CONTROLLED_VALIDATION_ONLY (Krok 7B/8): gdy przekazano
+    # kontrolne jednoelementowe źródło, jest ono używane zamiast domyślnego
+    # YahooDiscoverySource. Normalny composition root (controlled_source=None)
+    # pozostaje bez zmian.
+    if controlled_source is not None:
+        instrument_source = controlled_source
+    elif effective_kind == SOURCE_KIND_STATIC:
         from application.sources.static_instrument_source import StaticInstrumentSource
         instrument_source = StaticInstrumentSource(validated_tickers)
     else:

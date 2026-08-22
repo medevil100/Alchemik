@@ -2,10 +2,11 @@
 InstrumentObservation — model domenowy trwałej obserwacji jednego instrumentu.
 
 Reprezentuje obserwację instrumentu z własną niezmienną tożsamością observation_id,
-cyklem życia opartym na czterech stanach (ACTIVE, TERMINATED_DOMAIN,
-TERMINATED_TECHNICAL, INTEGRITY_BREACHED) i jawnymi przejściami terminalnymi.
+cyklem życia opartym na stanach (ACTIVE, TERMINATED_DOMAIN, TERMINATED_TECHNICAL,
+INTEGRITY_BREACHED, RETIRED_TIMEFRAME) i jawnymi przejściami terminalnymi.
 
 KROK 4 — implementacja po Test First RED.
+KROK 7C.4B — dodanie timeframe i statusu RETIRED_TIMEFRAME (decyzja właściciela 2026-08-21).
 """
 
 from __future__ import annotations
@@ -14,8 +15,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-_ALLOWED_STATES = frozenset({"ACTIVE", "TERMINATED_DOMAIN", "TERMINATED_TECHNICAL", "INTEGRITY_BREACHED"})
-_TERMINAL_STATES = frozenset({"TERMINATED_DOMAIN", "TERMINATED_TECHNICAL", "INTEGRITY_BREACHED"})
+_ALLOWED_STATES = frozenset({
+    "ACTIVE",
+    "TERMINATED_DOMAIN",
+    "TERMINATED_TECHNICAL",
+    "INTEGRITY_BREACHED",
+    "RETIRED_TIMEFRAME",
+})
+_TERMINAL_STATES = frozenset({
+    "TERMINATED_DOMAIN",
+    "TERMINATED_TECHNICAL",
+    "INTEGRITY_BREACHED",
+    "RETIRED_TIMEFRAME",
+})
 
 
 @dataclass
@@ -30,15 +42,22 @@ class InstrumentObservation:
     terminated_at: Optional[datetime] = None
     termination_reason: Optional[str] = None
 
+    # Krok 7C.4B — timeframe Observation.
+    # Domyślna wartość LEGACY_UNKNOWN zapewnia kompatybilność istniejących
+    # konstruktorów bez nowych argumentów.
+    timeframe: str = "LEGACY_UNKNOWN"
+
     _initialized: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
-        """Validate state on creation."""
+        """Validate state and timeframe on creation."""
         if self.state not in _ALLOWED_STATES:
             raise ValueError(
                 f"Invalid state: {self.state!r}. "
                 f"Allowed: {', '.join(sorted(_ALLOWED_STATES))}"
             )
+        if not isinstance(self.timeframe, str) or not self.timeframe.strip():
+            raise ValueError("timeframe must be a non-empty canonical string")
         self._initialized = True
 
     def __setattr__(self, name, value):
@@ -55,7 +74,7 @@ class InstrumentObservation:
             return
 
         # Identity fields are immutable after creation
-        if name in ("observation_id", "instrument_id"):
+        if name in ("observation_id", "instrument_id", "timeframe"):
             raise AttributeError(f"{name} is immutable")
 
         # State validation on set
@@ -83,6 +102,7 @@ class InstrumentObservation:
         - ACTIVE → TERMINATED_DOMAIN
         - ACTIVE → TERMINATED_TECHNICAL
         - ACTIVE → INTEGRITY_BREACHED
+        - ACTIVE → RETIRED_TIMEFRAME (Krok 7C.4B)
 
         Requires a non-empty *reason*.  Fails with ValueError if:
         - *target_state* is not a valid terminal state

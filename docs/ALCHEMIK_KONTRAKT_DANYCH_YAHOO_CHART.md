@@ -689,6 +689,59 @@ Dokument nie zmienia zatwierdzonych zasad granicy InstrumentReading → Instrume
 
 Decyzja właściciela z 2026-08-19, wynikająca z rzeczywistego cyklu Yahoo, rozszerza KANON §13.3 pkt 9 i §13.5 pkt 12 o model rewizji InstrumentReading (wyniki domenowe `save_reading`: `ACCEPTED`, `SOURCE_REVISION_ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`; unikalność `(instrument_id, market_data_timestamp, revision_number)`) i zastępuje wcześniejszy zakaz rewizji.
 
+Tryb kontraktowy CONTROLLED_VALIDATION_ONLY (Krok 7B/8, decyzja właściciela 2026-08-20): na izolowanej kopii bazy, z dwoma jawnymi flagami (`--allow-network`, `--confirm-step7`), jedno `RuntimeService.run_cycle()`, nie jest sygnałem inwestycyjnym i nie jest uruchamiany przez scheduler. Kontrolowany overlay intraday: `close = effective_previous_close × 1.04` oraz minimalne `high = max(real_high, controlled_close)`; zmodyfikowane surowe intraday przechodzi normalną produkcyjną walidację YahooChartProvider, a wartości przed/po są zapisywane w trace.
+
+### 20.1 Decyzja właściciela 2026-08-21 — świeca 1h monitorowana co 15 minut (Krok 7C)
+
+Kategoria: **DECYZJA WŁAŚCICIELA** (zastępuje wcześniejsze wymaganie nakładania overlayu na ostatnią zamkniętą świecę).
+
+- podstawowym interwałem monitorowania ALCHEMIKA jest świeca 1h;
+- ALCHEMIK kontroluje bieżącą świecę 1h co 15 minut;
+- utrwalane są stany po 15, 30 i 45 minutach oraz stan zamknięcia po 60 minutach;
+- każdy stan jest porównywany z zamknięciem poprzedniej zamkniętej świecy 1h oraz z poprzednim stanem bieżącej świecy;
+- zachowywana jest kolejność ruchów wewnątrz godziny, a nie wyłącznie końcowy OHLC;
+- timeframe jest częścią tożsamości Readingu (Readingi 5m, 30m i 1h nie mogą być mylone przy tym samym symbolu i timestampie);
+- `candle_state` rozróżnia OPEN i CLOSED;
+- `scan_timestamp` oznacza rzeczywisty czas obserwacji;
+- `market_data_timestamp` oznacza początek świecy;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza kolejny stan tej samej świecy 1h, w tym przejście OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje wyłącznie dla późniejszej korekty źródłowej świecy już zamkniętej;
+- przykład łańcucha: OPEN rev1 → OPEN rev2 → OPEN rev3 → CLOSED rev4; późniejsza korekta Yahoo może utworzyć `SOURCE_REVISION_ACCEPTED` rev5;
+- następna świeca 1h rozpoczyna `revision_number=1`, a jej `prev_reading_id` wskazuje efektywną końcową wersję poprzedniej świecy;
+- poprzednie zamknięcie 1h jest stałą kotwicą porównania;
+- trajektoria wraz z danymi Huntera, Technical Engine, MasterEngine, Tavily i pozostałych silników trafia do AI;
+- Telegram może zostać uruchomiony wyłącznie po decyzji AI i przejściu naturalnych bramek;
+- chwilowe przekroczenie poprzedniego close nie jest automatycznie wybiciem;
+- podane przez właściciela wartości cenowe są wyłącznie przykładami trajektorii i nie stanowią progów systemu.
+
+Kontrolowany Krok 7 (overlay wariantu B):
+
+- overlay dotyczy potwierdzonej bieżącej otwartej świecy 1h;
+- `controlled_close = effective_previous_close × 1.04`;
+- `controlled_high = max(real_high, controlled_close)`;
+- pozostałe pola pozostają rzeczywistymi danymi Yahoo;
+- trace zapisuje `interval`, `candle_state`, `candle_start`, `expected_close`, `observed_at` oraz `close`/`high` przed i po;
+- jeżeli nie istnieje otwarta świeca 1h, przebieg zatrzymuje się naturalnie;
+- overlay nie wymusza MarketEvent, decyzji AI ani Telegrama;
+- wymagane oznaczenia Telegrama pozostają: `ALCHEMIK — CONTROLLED_VALIDATION_ONLY` oraz `TO NIE JEST SYGNAŁ INWESTYCYJNY.`
+
+#### 20.1.1 Uzupełnienie decyzji właściciela 2026-08-21 — separacja timeframe i status RETIRED_TIMEFRAME (Wariant A+C zatwierdzony)
+
+- Observation są rozdzielone per `(instrument_id, timeframe)`;
+- baseline jest rozdzielony per `(instrument_id, timeframe)`;
+- historia 5m pozostaje zachowana jako archiwum;
+- 327 historycznych Readingów: późniejszy backfill `timeframe="5m"`, `candle_state="LEGACY_UNKNOWN"`;
+- 171 historycznych ACTIVE Observation 5m: późniejsza kontrolowana migracja do `RETIRED_TIMEFRAME`;
+- 1 Observation `INTEGRITY_BREACHED` pozostaje bez zmian;
+- brak kasowania i nadpisywania historii;
+- pierwsza Observation 1h rozpoczyna niezależny łańcuch;
+- pierwsza kotwica 1h to poprzednia zamknięta świeca `CLOSED`;
+- bieżąca świeca jest osobnym Readingiem `OPEN`;
+- żaden `prev_reading_id`, baseline ani restore 1h nie może wskazywać danych 5m;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza postęp otwartej świecy i przejście OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje korektą źródłową świecy już zamkniętej;
+- szczegóły tabeli baseline oraz implementacja migracji nie są jeszcze opisane w tym dokumencie.
+
 ---
 
 ## 21. WPŁYW NA TECHNICAL ENGINE

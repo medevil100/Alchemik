@@ -46,6 +46,9 @@ class FetchResult:
     kind: OutcomeKind
     data: object
     message: str | None
+    # Krok 7C/12 — request-scoped observed_at transportowany od kontrolowanej
+    # granicy Yahoo do YahooChartProvider. Addytywny; domyślnie None.
+    observed_at: datetime | None = None
 
 
 @dataclass
@@ -64,8 +67,11 @@ class ScreenerPagination:
 
 CHART_VARIANTS = {
     "daily": {"range": "1y", "interval": "1d"},
-    "intraday": {"range": "5d", "interval": "5m"},
+    "intraday": {"range": "5d", "interval": "1h"},
 }
+
+# Krok 7C — czytelny alias dla kontraktu 1h.
+VARIANTS = CHART_VARIANTS
 
 
 def _build_screener_body(offset: int, size: int) -> str:

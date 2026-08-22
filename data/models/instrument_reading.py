@@ -8,6 +8,7 @@ do macierzystej InstrumentObservation oraz opcjonalną relację
 do poprzedniego odczytu.
 
 KROK 4 — implementacja po Test First RED, z korektami po audycie.
+KROK 7C.4B — dodanie timeframe i candle_state (decyzja właściciela 2026-08-21).
 """
 
 from __future__ import annotations
@@ -20,6 +21,9 @@ _ALLOWED_COMPLETENESS = frozenset({"COMPLETE", "PARTIAL"})
 
 # Jedyna dozwolona wartość źródła danych
 _ALLOWED_SOURCE = "YahooFinance"
+
+# Dozwolone stany świecy (Krok 7C.4B).
+_ALLOWED_CANDLE_STATES = frozenset({"OPEN", "CLOSED", "LEGACY_UNKNOWN"})
 
 
 @dataclass
@@ -47,10 +51,17 @@ class InstrumentReading:
     revision_number: int = 1
     supersedes_reading_id: Optional[str] = None
 
+    # Krok 7C.4B — timeframe i candle_state.
+    # timeframe jest niepustą, kanoniczną wartością tekstową (np. "5m", "30m", "1h").
+    # Domyślna wartość LEGACY_UNKNOWN zapewnia kompatybilność istniejących
+    # konstruktorów bez nowych argumentów.
+    timeframe: str = "LEGACY_UNKNOWN"
+    candle_state: str = "LEGACY_UNKNOWN"
+
     _initialized: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
-        """Validate source, data_completeness, and OHLCV invariants."""
+        """Validate source, data_completeness, OHLCV, timeframe i candle_state."""
         # 1. Source validation
         if self.source != _ALLOWED_SOURCE:
             raise ValueError(
@@ -80,6 +91,17 @@ class InstrumentReading:
 
         # 5. volume is always optional — no validation needed
 
+        # 6. timeframe jest niepustą, kanoniczną wartością tekstową.
+        if not isinstance(self.timeframe, str) or not self.timeframe.strip():
+            raise ValueError("timeframe must be a non-empty canonical string")
+
+        # 7. candle_state dozwolone wartości.
+        if self.candle_state not in _ALLOWED_CANDLE_STATES:
+            raise ValueError(
+                f"candle_state must be one of {sorted(_ALLOWED_CANDLE_STATES)}, "
+                f"got {self.candle_state!r}"
+            )
+
         self._initialized = True
 
     def __setattr__(self, name, value):
@@ -101,15 +123,18 @@ class InstrumentReading:
             "open", "high", "low", "close", "volume",
             "source", "prev_reading_id", "data_completeness",
             "revision_number", "supersedes_reading_id",
+            "timeframe", "candle_state",
         ):
             raise AttributeError(f"{name} is immutable")
 
         object.__setattr__(self, name, value)
 
-    def canonical_identity(self) -> Tuple[str, datetime]:
+    def canonical_identity(self) -> Tuple[str, datetime, str]:
         """
-        Return the canonical domenowa pair: (instrument_id, market_data_timestamp).
+        Return the canonical domenowa triple: (instrument_id, market_data_timestamp, timeframe).
 
-        This pair constitutes a jednoznaczny fakt rynkowy within the domen.
+        Timeframe jest częścią tożsamości domenowej (decyzja właściciela 2026-08-21):
+        ten sam instrument i timestamp w interwałach 5m oraz 1h tworzą różne
+        tożsamości domenowe.
         """
-        return (self.instrument_id, self.market_data_timestamp)
+        return (self.instrument_id, self.market_data_timestamp, self.timeframe)

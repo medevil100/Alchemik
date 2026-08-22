@@ -36,9 +36,42 @@ class YahooChartProvider:
     result shape of ``scan()`` is unchanged.
     """
 
-    def __init__(self, session, discovery_source=None):
+    # Krok 7C — intraday produkcyjny to świeca 1h.
+    TIMEFRAME_INTRADAY = "1h"
+
+    # Czas obserwacji może być wstrzyknięty dla deterministycznej klasyfikacji
+    # świecy; w produkcji ustalany jeden raz dla całego wyniku intraday.
+
+    @staticmethod
+    def _classify_candle_state(candle_start, observed_at) -> str:
+        """Rozpoznanie stanu świecy 1h (decyzja właściciela 2026-08-21).
+
+        Świeca 1h zaczyna się w pełnej godzinie (candle_start) i kończy
+        dokładnie godzinę później. Jeżeli czas obserwacji (observed_at) jest
+        wcześniejszy niż candle_start + 1h, świeca jest OPEN; w przeciwnym
+        razie — CLOSED.
+        """
+        if candle_start.tzinfo is None:
+            candle_start = candle_start.replace(tzinfo=timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+
+        from datetime import timedelta
+        # Granica zamknięcia to dokładnie candle_start + 1h, bez zaokrąglania
+        # początku świecy — zachowujemy dokładny timestamp Yahoo.
+        close_at = candle_start + timedelta(hours=1)
+
+        if observed_at < close_at:
+            return "OPEN"
+        return "CLOSED"
+
+    def __init__(self, session, discovery_source=None, clock=None):
         self._session = session
         self._discovery_source = discovery_source
+        # Zegar zwracający aktualny czas UTC — wstrzykiwalny w teście bez
+        # patchowania komponentów wewnętrznych. Czas pobierany jest dokładnie
+        # raz na wynik intraday; kolejne fetch/validate pobiera nowy czas.
+        self._clock = clock if clock is not None else (lambda: datetime.now(timezone.utc))
         self.last_scan: List[dict] = []
         self.last_matrix: List[dict] = []
 
@@ -197,6 +230,13 @@ class YahooChartProvider:
         rejection_counts: Dict[str, int] = {}
         last_valid_ts = None
 
+        # Jeden czas obserwacji ustalany raz dla całego wyniku intraday.
+        result_observed_at = None
+        if base["variant"] == "intraday":
+            result_observed_at = getattr(result, "observed_at", None)
+            if result_observed_at is None:
+                result_observed_at = self._clock()
+
         for i in range(n):
             o = open_values[i]
             h = high_values[i]
@@ -226,6 +266,17 @@ class YahooChartProvider:
                     rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
                 continue
 
+            row_ts = datetime.fromtimestamp(float(timestamps[i]), tz=timezone.utc)
+            timeframe = None
+            candle_state = None
+            observed_at = None
+            if base["variant"] == "intraday":
+                # Produkcyjna ścieżka intraday: świeca 1h, klasyfikacja stanu
+                # względem jednego wspólnego czasu obserwacji.
+                timeframe = self.TIMEFRAME_INTRADAY
+                candle_state = self._classify_candle_state(row_ts, result_observed_at)
+                observed_at = result_observed_at
+
             # volume=0 is a valid value; preserve it exactly.
             market_data.append(
                 MarketData(
@@ -234,7 +285,10 @@ class YahooChartProvider:
                     low=float(l),
                     close=float(c),
                     volume=float(v),
-                    timestamp=datetime.fromtimestamp(float(timestamps[i]), tz=timezone.utc),
+                    timestamp=row_ts,
+                    timeframe=timeframe,
+                    candle_state=candle_state,
+                    observed_at=observed_at,
                 )
             )
             last_valid_ts = float(timestamps[i])

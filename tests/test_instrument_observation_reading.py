@@ -516,7 +516,7 @@ class TestInstrumentReadingCanonicalIdentity:
             volume=50000.0,
         )
         identity = reading.canonical_identity()
-        assert identity == ("SYNTH-001", ts)
+        assert identity == ("SYNTH-001", ts, "LEGACY_UNKNOWN")
 
     def test_canonical_identity_different_instruments(self):
         """Rozne instrumenty maja rozne pary kanoniczne."""

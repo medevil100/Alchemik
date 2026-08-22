@@ -460,13 +460,93 @@ Następujące zasady zostały zatwierdzone przez właściciela 09.08.2026 i prze
 
 9. `CHANGED` nie jest równoznaczne z `TRIGGERED`.
 
+### 14.7 Decyzja właściciela 2026-08-20 — tryb CONTROLLED_VALIDATION_ONLY (Krok 7B)
+
+Zatwierdzony kontrakt kontrolnego overlayu (wariant B):
+
+- kontrolowany `close = effective_previous_close × 1.04`;
+- minimalne `high = max(real_high, controlled_close)`;
+- `open`, `low`, `volume` i `timestamp` pozostają z rzeczywistego Yahoo;
+- zmiana high jest wyłącznie minimalną techniczną korektą spójności OHLC;
+- wartości `close` i `high` przed oraz po muszą znaleźć się w bezpiecznym trace;
+- overlay działa wyłącznie w trybie CONTROLLED_VALIDATION_ONLY;
+- zmodyfikowane surowe intraday musi przejść normalną produkcyjną walidację YahooChartProvider.
+
+Tryb kontrolny:
+
+- jest wyłącznie kontrolny;
+- działa na izolowanej kopii produkcyjnej bazy;
+- wymaga dwóch jawnych flag (`--allow-network`, `--confirm-step7`);
+- nie jest sygnałem inwestycyjnym;
+- używa dokładnie jednego `RuntimeService.run_cycle()`;
+- nie jest uruchamiany przez scheduler.
+
+---
+
+### 14.8 Decyzja właściciela 2026-08-21 — kontrakt trajektorii świecy 1h monitorowanej co 15 minut (Krok 7C)
+
+Zatwierdzony kontrakt podstawowego interwału monitorowania oraz trajektorii świecy 1h.
+
+1. Podstawowym interwałem monitorowania ALCHEMIKA jest świeca 1h.
+2. ALCHEMIK kontroluje bieżącą świecę 1h co 15 minut.
+3. Utrwalane są stany po 15, 30 i 45 minutach oraz stan zamknięcia po 60 minutach.
+4. Każdy stan jest porównywany:
+   - z zamknięciem poprzedniej zamkniętej świecy 1h (stała kotwica porównania);
+   - z poprzednim stanem bieżącej świecy.
+5. Zachowywana jest kolejność ruchów wewnątrz godziny, a nie wyłącznie końcowy OHLC.
+6. Timeframe jest częścią tożsamości Readingu (Readingi różnych interwałów — 5m, 30m, 1h — nie mogą być mylone przy tym samym symbolu i timestampie).
+7. `candle_state` rozróżnia stan OPEN i CLOSED świecy.
+8. `scan_timestamp` oznacza rzeczywisty czas obserwacji; `market_data_timestamp` oznacza początek świecy.
+9. Wyniki zapisu Readingów (definicje w `application/history_repository.py`):
+   - `CANDLE_PROGRESS_ACCEPTED` oznacza kolejny stan tej samej świecy 1h, w tym przejście OPEN → CLOSED;
+   - `SOURCE_REVISION_ACCEPTED` pozostaje wyłącznie dla późniejszej korekty źródłowej świecy już zamkniętej.
+10. Przykładowy łańcuch: OPEN rev1 → OPEN rev2 → OPEN rev3 → CLOSED rev4; późniejsza korekta Yahoo może utworzyć `SOURCE_REVISION_ACCEPTED` rev5.
+11. Następna świeca 1h rozpoczyna `revision_number=1`, a jej `prev_reading_id` wskazuje efektywną końcową wersję poprzedniej świecy.
+12. Poprzednie zamknięcie 1h jest stałą kotwicą porównania.
+13. Trajektoria wraz z danymi Huntera, Technical Engine, MasterEngine, Tavily i pozostałych silników trafia do AI.
+14. Telegram może zostać uruchomiony wyłącznie po decyzji AI i przejściu naturalnych bramek.
+15. Chwilowe przekroczenie poprzedniego close nie jest automatycznie wybiciem.
+16. Podane przez właściciela wartości cenowe są wyłącznie przykładami trajektorii i nie stanowią progów systemu.
+
+Kontrolowany Krok 7 (overlay i przebieg kontrolny):
+
+- overlay wariantu B dotyczy potwierdzonej bieżącej otwartej świecy 1h;
+- `controlled_close = effective_previous_close × 1.04`;
+- `controlled_high = max(real_high, controlled_close)`;
+- pozostałe pola pozostają rzeczywistymi danymi Yahoo;
+- trace zapisuje `interval`, `candle_state`, `candle_start`, `expected_close`, `observed_at` oraz `close`/`high` przed i po;
+- jeżeli nie istnieje otwarta świeca 1h, przebieg zatrzymuje się naturalnie;
+- overlay nie wymusza MarketEvent, decyzji AI ani Telegrama;
+- wymagane oznaczenia Telegrama pozostają:
+  - `ALCHEMIK — CONTROLLED_VALIDATION_ONLY`;
+  - `TO NIE JEST SYGNAŁ INWESTYCYJNY.`
+
+Niniejsza decyzja zastępuje wcześniejsze wymaganie nakładania overlayu na ostatnią zamkniętą świecę (wpis w sekcji 14.7 z 2026-08-20, w zakresie dotyczącym obiektu overlayu).
+
+Uzupełnienie decyzji właściciela z 2026-08-21 — separacja timeframe i status RETIRED_TIMEFRAME (Wariant A+C zatwierdzony):
+
+- Observation są rozdzielone per `(instrument_id, timeframe)`;
+- baseline jest rozdzielony per `(instrument_id, timeframe)`;
+- historia 5m pozostaje zachowana jako archiwum;
+- 327 historycznych Readingów: późniejszy backfill `timeframe="5m"`, `candle_state="LEGACY_UNKNOWN"`;
+- 171 historycznych ACTIVE Observation 5m: późniejsza kontrolowana migracja do `RETIRED_TIMEFRAME`;
+- 1 Observation `INTEGRITY_BREACHED` pozostaje bez zmian;
+- brak kasowania i nadpisywania historii;
+- pierwsza Observation 1h rozpoczyna niezależny łańcuch;
+- pierwsza kotwica 1h to poprzednia zamknięta świeca `CLOSED`;
+- bieżąca świeca jest osobnym Readingiem `OPEN`;
+- żaden `prev_reading_id`, baseline ani restore 1h nie może wskazywać danych 5m;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza postęp otwartej świecy i przejście OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje korektą źródłową świecy już zamkniętej;
+- szczegóły tabeli baseline oraz implementacja migracji nie są jeszcze opisane w tym kanonie.
+
 ---
 
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026
-Data aktualizacji: 19.08.2026
-Wersja: 1.4
-Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12), zabezpieczenia trwałości (§13) oraz granicy RuntimeService → InstrumentObservation (§14) zatwierdzone przez właściciela 08–09.08.2026. Model rewizji InstrumentReading oraz wyniki `save_reading` zatwierdzone przez właściciela 19.08.2026 (decyzja wynikająca z rzeczywistego cyklu Yahoo, zastępująca wcześniejszy zakaz rewizji). Pozostałe treści pozostają proponowane.
+Data aktualizacji: 21.08.2026
+Wersja: 1.5
+Status: Częściowo zatwierdzony — decyzje dotyczące granicy InstrumentReading → InstrumentObservation (§12), zabezpieczenia trwałości (§13) oraz granicy RuntimeService → InstrumentObservation (§14) zatwierdzone przez właściciela 08–09.08.2026. Model rewizji InstrumentReading oraz wyniki `save_reading` zatwierdzone przez właściciela 19.08.2026 (decyzja wynikająca z rzeczywistego cyklu Yahoo, zastępująca wcześniejszy zakaz rewizji). Kontrakt trajektorii świecy 1h monitorowanej co 15 minut (§14.8) zatwierdzony przez właściciela 21.08.2026. Pozostałe treści pozostają proponowane.
 
 Kanon zmienia się wyłącznie po jawnej decyzji właściciela. Zatwierdzone zasady §12, §13 i §14 są obowiązujące; pozostałe sekcje pozostają proponowane do czasu akceptacji właściciela.

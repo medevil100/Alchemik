@@ -143,7 +143,8 @@ class SQLiteHistoryRepository:
             state TEXT NOT NULL DEFAULT 'ACTIVE',
             created_at TEXT NOT NULL,
             terminated_at TEXT,
-            termination_reason TEXT
+            termination_reason TEXT,
+            timeframe TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN'
         );
 
         CREATE INDEX IF NOT EXISTS idx_obs_instrument_state
@@ -165,6 +166,8 @@ class SQLiteHistoryRepository:
             data_completeness TEXT NOT NULL DEFAULT 'COMPLETE',
             revision_number INTEGER NOT NULL DEFAULT 1,
             supersedes_reading_id TEXT,
+            timeframe TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN',
+            candle_state TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN',
             FOREIGN KEY (observation_id) REFERENCES instrument_observations(observation_id)
         );
 
@@ -177,6 +180,16 @@ class SQLiteHistoryRepository:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_observation
             ON instrument_observations(instrument_id)
             WHERE state = 'ACTIVE';
+
+        CREATE TABLE IF NOT EXISTS instrument_baselines (
+            instrument_id TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            baseline_status TEXT,
+            last_reading_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (instrument_id, timeframe)
+        );
 
         CREATE TABLE IF NOT EXISTS universe_snapshots (
             snapshot_id TEXT PRIMARY KEY,
@@ -292,6 +305,7 @@ class SQLiteHistoryRepository:
         self._migrate_universe_registry()
         self._migrate_reading_revisions()
         self._migrate_event_outcome_fk()
+        self._migrate_timeframe()
 
     def _column_exists(self, cursor, table: str, column: str) -> bool:
         """Check whether *column* already exists in *table*."""
@@ -549,6 +563,122 @@ class SQLiteHistoryRepository:
             conn.commit()
         except Exception:
             logger.exception("Migration signal_timing failed")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _migrate_timeframe(self) -> None:
+        """Transakcyjna, idempotentna migracja timeframe 7C.
+
+        - dodaje kolumny timeframe/candle_state do instrument_readings oraz
+          timeframe do instrument_observations;
+        - historyczne Readingi (KROK 5/6 = 5m intraday) otrzymują
+          timeframe='5m' i candle_state='LEGACY_UNKNOWN';
+        - historyczne ACTIVE Observation 5m przechodzą w RETIRED_TIMEFRAME
+          z jawnym powodem (bez naruszania INTEGRITY_BREACHED i pozostałych
+          stanów terminalnych);
+        - tworzy tabelę instrument_baselines i zapisuje 172 baseline 5m;
+        - przebudowuje idx_readings_identity na
+          (instrument_id, market_data_timestamp, timeframe, revision_number);
+        - przebudowuje idx_one_active_observation na
+          (instrument_id, timeframe) WHERE state='ACTIVE';
+        - rollback przy błędzie; ponowne otwarcie jest idempotentne.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+
+            # 1. Kolumny timeframe / candle_state (idempotentnie).
+            had_rdg_tf = self._column_exists(cursor, "instrument_readings", "timeframe")
+            had_rdg_cs = self._column_exists(cursor, "instrument_readings", "candle_state")
+            had_obs_tf = self._column_exists(cursor, "instrument_observations", "timeframe")
+
+            if not had_rdg_tf:
+                cursor.execute(
+                    "ALTER TABLE instrument_readings ADD COLUMN "
+                    "timeframe TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN'"
+                )
+            if not had_rdg_cs:
+                cursor.execute(
+                    "ALTER TABLE instrument_readings ADD COLUMN "
+                    "candle_state TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN'"
+                )
+            if not had_obs_tf:
+                cursor.execute(
+                    "ALTER TABLE instrument_observations ADD COLUMN "
+                    "timeframe TEXT NOT NULL DEFAULT 'LEGACY_UNKNOWN'"
+                )
+
+            curr_time = datetime.now(timezone.utc).isoformat()
+
+            # 2. Backfill Readingów tylko przy pierwszym dodaniu kolumny
+            #    (historyczna baza KROK 5/6). Nowe Readingi zapisywane przez
+            #    RuntimeService z domyślnym LEGACY_UNKNOWN nie są rekategoryzowane.
+            if not had_rdg_tf:
+                cursor.execute(
+                    "UPDATE instrument_readings "
+                    "SET timeframe = '5m', candle_state = 'LEGACY_UNKNOWN' "
+                    "WHERE timeframe = 'LEGACY_UNKNOWN' OR timeframe IS NULL OR "
+                    "      candle_state = 'LEGACY_UNKNOWN' OR candle_state IS NULL"
+                )
+
+            # 3. Historyczne ACTIVE Observation → RETIRED_TIMEFRAME tylko przy
+            #    pierwszym dodaniu kolumny (historyczna baza 5m).
+            if not had_obs_tf:
+                cursor.execute(
+                    "UPDATE instrument_observations "
+                    "SET state = 'RETIRED_TIMEFRAME', "
+                    "    terminated_at = COALESCE(terminated_at, ?), "
+                    "    termination_reason = COALESCE(termination_reason, "
+                    "        'przejście na 1h — archiwum 5m'), "
+                    "    timeframe = '5m' "
+                    "WHERE state = 'ACTIVE' AND (timeframe = 'LEGACY_UNKNOWN' OR timeframe IS NULL)",
+                    (curr_time,),
+                )
+
+            # 4. Tabela baseline per timeframe — zapis historycznych baseline 5m
+            if not had_obs_tf:
+                cursor.execute(
+                    """INSERT OR IGNORE INTO instrument_baselines
+                       (instrument_id, timeframe, baseline_status, last_reading_id, created_at, updated_at)
+                       SELECT instrument_id, '5m', 'PENDING_BASELINE', NULL, ?, ?
+                       FROM instrument_observations
+                       WHERE state = 'RETIRED_TIMEFRAME'
+                       GROUP BY instrument_id""",
+                    (curr_time, curr_time),
+                )
+
+            # 5. Przebudowa indeksu tożsamości readingów na (instrument, timestamp, timeframe, revision)
+            cursor.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_readings_identity'"
+            )
+            row = cursor.fetchone()
+            if row is not None and "timeframe" not in (row[0] or ""):
+                cursor.execute("DROP INDEX idx_readings_identity")
+            cursor.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_readings_identity
+                   ON instrument_readings(instrument_id, market_data_timestamp, timeframe, revision_number)"""
+            )
+
+            # 6. Przebudowa indeksu ACTIVE Observation na (instrument, timeframe)
+            cursor.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_one_active_observation'"
+            )
+            obs_idx = cursor.fetchone()
+            if obs_idx is not None and "timeframe" not in (obs_idx[0] or ""):
+                cursor.execute("DROP INDEX idx_one_active_observation")
+            cursor.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_observation
+                   ON instrument_observations(instrument_id, timeframe)
+                   WHERE state = 'ACTIVE'"""
+            )
+
+            conn.commit()
+        except Exception:
             conn.rollback()
             raise
         finally:
@@ -1929,7 +2059,8 @@ class SQLiteHistoryRepository:
     # ------------------------------------------------------------------
 
     def save_reading(self, observation, reading) -> str:
-        """
+        """Save reading with per-timeframe identity and candle lifecycle (7C).
+
         Atomowo zapisz InstrumentObservation i InstrumentReading z obsługą rewizji.
 
         Wyniki:
@@ -1954,6 +2085,9 @@ class SQLiteHistoryRepository:
         if reading.instrument_id != instrument_id:
             return "CONFLICT"
 
+        timeframe = getattr(reading, "timeframe", None) or "LEGACY_UNKNOWN"
+        candle_state = getattr(reading, "candle_state", None) or "LEGACY_UNKNOWN"
+
         conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
@@ -1972,23 +2106,24 @@ class SQLiteHistoryRepository:
                     f"Cannot add reading to terminal observation {observation_id}"
                 )
 
-            # 1. Istniejąca najnowsza wersja dla tej tożsamości
+            # 1. Istniejąca najnowsza wersja dla tej tożsamości (per timeframe)
             cursor.execute(
                 """SELECT reading_id, open, high, low, close, volume,
                           data_completeness, source, observation_id, revision_number,
-                          supersedes_reading_id
+                          supersedes_reading_id, candle_state
                    FROM instrument_readings
                    WHERE instrument_id = ? AND market_data_timestamp = ?
+                     AND timeframe = ?
                    ORDER BY revision_number DESC
                    LIMIT 1""",
-                (instrument_id, market_ts_iso),
+                (instrument_id, market_ts_iso, timeframe),
             )
             existing = cursor.fetchone()
 
             if existing is not None:
                 (ex_rdg_id, ex_open, ex_high, ex_low, ex_close, ex_volume,
                  ex_completeness, ex_source, ex_obs_id, ex_revision,
-                 ex_supersedes) = existing
+                 ex_supersedes, ex_candle_state) = existing
 
                 same_content = (
                     (reading.open == ex_open) and
@@ -1999,6 +2134,7 @@ class SQLiteHistoryRepository:
                     (reading.data_completeness == ex_completeness) and
                     (reading.source == ex_source)
                 )
+                same_state = reading.candle_state == ex_candle_state
 
                 reference = reading.supersedes_reading_id
                 valid_ref = (
@@ -2006,10 +2142,15 @@ class SQLiteHistoryRepository:
                     or reference == ex_rdg_id
                 )
 
-                if same_content:
-                    # Identyczna treść — rewizja niepotrzebna; uszkodzone
+                if same_content and same_state:
+                    # Identyczna treść i stan — rewizja niepotrzebna; uszkodzone
                     # supersedes przy identycznej treści = CONFLICT.
                     return "DUPLICATE_NO_OP" if valid_ref else "CONFLICT"
+
+                # Cofnięcie zamkniętej świecy do OPEN (ten sam timestamp) jest
+                # odrzucane zgodnie z kontraktem trajektorii — nie jest postępem.
+                if ex_candle_state == "CLOSED" and candle_state == "OPEN":
+                    return "CONFLICT"
 
                 # Zmieniona treść tego samego timestampu.
                 if (reading.observation_id != ex_obs_id) or (reading.source != ex_source):
@@ -2024,7 +2165,44 @@ class SQLiteHistoryRepository:
                     # Uszkodzone supersedes przy zmienionej treści → CONFLICT.
                     return "CONFLICT"
 
-                # Poprawna rewizja źródła: ta sama tożsamość, Observation i źródło.
+                # Krok 7C: postęp i finalizacja dotyczą wyłącznie jawnego
+                # łańcucha timeframe=1h. Dane legacy (timeframe=LEGACY_UNKNOWN)
+                # zachowują dotychczasową semantykę SOURCE_REVISION_ACCEPTED.
+                if timeframe == "1h" and ex_candle_state in ("OPEN", "LEGACY_UNKNOWN"):
+                    new_revision = ex_revision + 1
+                    cursor.execute(
+                        """INSERT INTO instrument_readings
+                           (reading_id, observation_id, instrument_id,
+                            market_data_timestamp, scan_timestamp,
+                            open, high, low, close, volume,
+                            source, prev_reading_id, data_completeness,
+                            revision_number, supersedes_reading_id,
+                            timeframe, candle_state)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            reading.reading_id,
+                            observation_id,
+                            instrument_id,
+                            market_ts_iso,
+                            reading.scan_timestamp.isoformat(),
+                            reading.open,
+                            reading.high,
+                            reading.low,
+                            reading.close,
+                            reading.volume,
+                            reading.source,
+                            ex_rdg_id,
+                            reading.data_completeness,
+                            new_revision,
+                            ex_rdg_id,
+                            timeframe,
+                            candle_state,
+                        ),
+                    )
+                    conn.commit()
+                    return "CANDLE_PROGRESS_ACCEPTED"
+
+                # Poprawna rewizja źródła wyłącznie po CLOSED.
                 new_revision = ex_revision + 1
                 cursor.execute(
                     """INSERT INTO instrument_readings
@@ -2032,8 +2210,9 @@ class SQLiteHistoryRepository:
                         market_data_timestamp, scan_timestamp,
                         open, high, low, close, volume,
                         source, prev_reading_id, data_completeness,
-                        revision_number, supersedes_reading_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        revision_number, supersedes_reading_id,
+                        timeframe, candle_state)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         reading.reading_id,
                         observation_id,
@@ -2050,32 +2229,35 @@ class SQLiteHistoryRepository:
                         reading.data_completeness,
                         new_revision,
                         ex_rdg_id,
+                        timeframe,
+                        candle_state,
                     ),
                 )
                 conn.commit()
                 return "SOURCE_REVISION_ACCEPTED"
 
-            # 2. STALE_TIMESTAMP check
+            # 2. STALE_TIMESTAMP check (per timeframe)
             cursor.execute(
                 """SELECT market_data_timestamp FROM instrument_readings
-                   WHERE instrument_id = ?
+                   WHERE instrument_id = ? AND timeframe = ?
                    ORDER BY market_data_timestamp DESC
                    LIMIT 1""",
-                (instrument_id,),
+                (instrument_id, timeframe),
             )
             last_row = cursor.fetchone()
             if last_row is not None and market_ts_iso < last_row[0]:
                 return "STALE_TIMESTAMP"
 
             # 3. prev_reading_id — najnowsza rewizja najnowszego timestampu
-            #    wyłącznie w obrębie bieżącej Observation (kontrakt KROK 5).
+            #    wyłącznie w obrębie bieżącej Observation i tego samego timeframe.
             prev_reading_id = None
             cursor.execute(
                 """SELECT reading_id FROM instrument_readings
                    WHERE instrument_id = ? AND observation_id = ?
+                     AND timeframe = ?
                    ORDER BY market_data_timestamp DESC, revision_number DESC
                    LIMIT 1""",
-                (instrument_id, observation_id),
+                (instrument_id, observation_id, timeframe),
             )
             last_rdg = cursor.fetchone()
             if last_rdg is not None:
@@ -2104,8 +2286,9 @@ class SQLiteHistoryRepository:
                     market_data_timestamp, scan_timestamp,
                     open, high, low, close, volume,
                     source, prev_reading_id, data_completeness,
-                    revision_number, supersedes_reading_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    revision_number, supersedes_reading_id,
+                    timeframe, candle_state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     reading.reading_id,
                     observation_id,
@@ -2122,6 +2305,8 @@ class SQLiteHistoryRepository:
                     reading.data_completeness,
                     1,
                     None,
+                    timeframe,
+                    candle_state,
                 ),
             )
 
@@ -2162,12 +2347,13 @@ class SQLiteHistoryRepository:
     def _insert_observation(self, cursor, observation, now_iso):
         """Insert a new observation. Raises ValueError if INSERT fails
         due to partial UNIQUE index (second ACTIVE observation)."""
+        timeframe = getattr(observation, "timeframe", None) or "LEGACY_UNKNOWN"
         try:
             cursor.execute(
                 """INSERT INTO instrument_observations
                    (observation_id, instrument_id, state, created_at,
-                    terminated_at, termination_reason)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                    terminated_at, termination_reason, timeframe)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     observation.observation_id,
                     observation.instrument_id,
@@ -2175,6 +2361,7 @@ class SQLiteHistoryRepository:
                     observation.created_at.isoformat() if observation.created_at else now_iso,
                     observation.terminated_at.isoformat() if observation.terminated_at else None,
                     observation.termination_reason,
+                    timeframe,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -2229,25 +2416,36 @@ class SQLiteHistoryRepository:
         finally:
             conn.close()
 
-    def load_observation(self, instrument_id: str):
+    def load_observation(self, instrument_id: str, timeframe: Optional[str] = None):
         """
-        Wczytaj ACTIVE InstrumentObservation po instrument_id.
+        Wczytaj ACTIVE InstrumentObservation po instrument_id i timeframe.
 
-        Zwraca InstrumentObservation lub None, jeżeli nie ma ACTIVE.
+        Jeżeli timeframe nie jest podany, zwraca pierwszą ACTIVE Observation
+        instrumentu (zachowanie kompatybilne).
         """
         from data.models.instrument_observation import InstrumentObservation
 
         conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                """SELECT observation_id, instrument_id, state, created_at,
-                          terminated_at, termination_reason
-                   FROM instrument_observations
-                   WHERE instrument_id = ? AND state = 'ACTIVE'
-                   LIMIT 1""",
-                (instrument_id,),
-            )
+            if timeframe:
+                cursor.execute(
+                    """SELECT observation_id, instrument_id, state, created_at,
+                              terminated_at, termination_reason, timeframe
+                       FROM instrument_observations
+                       WHERE instrument_id = ? AND state = 'ACTIVE' AND timeframe = ?
+                       LIMIT 1""",
+                    (instrument_id, timeframe),
+                )
+            else:
+                cursor.execute(
+                    """SELECT observation_id, instrument_id, state, created_at,
+                              terminated_at, termination_reason, timeframe
+                       FROM instrument_observations
+                       WHERE instrument_id = ? AND state = 'ACTIVE'
+                       LIMIT 1""",
+                    (instrument_id,),
+                )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -2259,14 +2457,15 @@ class SQLiteHistoryRepository:
                 created_at=datetime.fromisoformat(row[3]),
                 terminated_at=datetime.fromisoformat(row[4]) if row[4] else None,
                 termination_reason=row[5],
+                timeframe=row[6] or "LEGACY_UNKNOWN",
             )
         finally:
             conn.close()
 
-    def restore_active_observations(self) -> list:
+    def restore_active_observations(self, timeframe: Optional[str] = None) -> list:
         """
         Restore all ACTIVE Observations with their last accepted Reading
-        (by greatest market_data_timestamp).
+        (by greatest market_data_timestamp), per timeframe.
 
         Returns a list of (InstrumentObservation, InstrumentReading) tuples.
         """
@@ -2276,17 +2475,26 @@ class SQLiteHistoryRepository:
         conn = sqlite3.connect(str(self.db_path))
         try:
             cursor = conn.cursor()
+
+            tf_filter = ""
+            params = []
+            if timeframe:
+                tf_filter = "AND o.timeframe = ?"
+                params.append(timeframe)
+
             cursor.execute(
                 """SELECT o.observation_id, o.instrument_id, o.state,
                           o.created_at, o.terminated_at, o.termination_reason,
+                          o.timeframe,
                           r.reading_id, r.instrument_id, r.market_data_timestamp,
                           r.scan_timestamp, r.open, r.high, r.low, r.close,
                           r.volume, r.source, r.prev_reading_id,
                           r.data_completeness, r.revision_number,
-                          r.supersedes_reading_id
+                          r.supersedes_reading_id, r.timeframe, r.candle_state
                    FROM instrument_observations o
                    JOIN instrument_readings r ON r.observation_id = o.observation_id
                    WHERE o.state = 'ACTIVE'
+                     AND r.data_completeness IS NOT NULL
                      AND r.market_data_timestamp = (
                          SELECT MAX(r2.market_data_timestamp)
                          FROM instrument_readings r2
@@ -2298,7 +2506,9 @@ class SQLiteHistoryRepository:
                          WHERE r3.observation_id = o.observation_id
                            AND r3.market_data_timestamp = r.market_data_timestamp
                      )
+                   """ + tf_filter + """
                    ORDER BY o.instrument_id""",
+                params,
             )
 
             results = []
@@ -2310,29 +2520,198 @@ class SQLiteHistoryRepository:
                     created_at=datetime.fromisoformat(row[3]),
                     terminated_at=datetime.fromisoformat(row[4]) if row[4] else None,
                     termination_reason=row[5],
+                    timeframe=row[6] or "LEGACY_UNKNOWN",
                 )
 
                 reading = InstrumentReading(
-                    reading_id=row[6],
+                    reading_id=row[7],
                     observation_id=row[0],
-                    instrument_id=row[7],
-                    market_data_timestamp=datetime.fromisoformat(row[8]),
-                    scan_timestamp=datetime.fromisoformat(row[9]),
-                    open=row[10],
-                    high=row[11],
-                    low=row[12],
-                    close=row[13],
-                    volume=row[14],
-                    source=row[15],
-                    prev_reading_id=row[16],
-                    data_completeness=row[17],
-                    revision_number=row[18],
-                    supersedes_reading_id=row[19],
+                    instrument_id=row[8],
+                    market_data_timestamp=datetime.fromisoformat(row[9]),
+                    scan_timestamp=datetime.fromisoformat(row[10]),
+                    open=row[11],
+                    high=row[12],
+                    low=row[13],
+                    close=row[14],
+                    volume=row[15],
+                    source=row[16],
+                    prev_reading_id=row[17],
+                    data_completeness=row[18],
+                    revision_number=row[19],
+                    supersedes_reading_id=row[20],
+                    timeframe=row[21] or "LEGACY_UNKNOWN",
+                    candle_state=row[22] or "LEGACY_UNKNOWN",
                 )
 
                 results.append((obs, reading))
 
             return results
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Baseline per timeframe (Krok 7C/8)
+    # ------------------------------------------------------------------
+
+    def save_baseline(self, instrument_id: str, timeframe: str, reading_id: str) -> str:
+        """Zapisuje trwały baseline per (instrument_id, timeframe) wskazujący
+        istniejący Reading tego samego instrumentu i timeframe (tabela
+        instrument_baselines, bez drugiej tabeli).
+
+        Wyniki:
+          * ``BASELINE_ACCEPTED``  — pierwszy baseline (niezmienny);
+          * ``BASELINE_UNCHANGED`` — ponowny zapis tego samego baseline;
+          * ``BASELINE_CONFLICT``  — próba podmiany istniejącego baseline,
+            albo Reading spoza timeframe/instrumentu.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT instrument_id, timeframe FROM instrument_readings
+                   WHERE reading_id = ?""",
+                (reading_id,),
+            )
+            row = cursor.fetchone()
+            if row is None or row[0] != instrument_id or row[1] != timeframe:
+                return "BASELINE_CONFLICT"
+
+            cursor.execute(
+                """SELECT last_reading_id FROM instrument_baselines
+                   WHERE instrument_id = ? AND timeframe = ?""",
+                (instrument_id, timeframe),
+            )
+            existing = cursor.fetchone()
+
+            if existing is None:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                cursor.execute(
+                    """INSERT INTO instrument_baselines
+                       (instrument_id, timeframe, baseline_status,
+                        last_reading_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (instrument_id, timeframe, "ESTABLISHED",
+                     reading_id, now_iso, now_iso),
+                )
+                conn.commit()
+                return "BASELINE_ACCEPTED"
+
+            if existing[0] == reading_id:
+                return "BASELINE_UNCHANGED"
+            return "BASELINE_CONFLICT"
+        finally:
+            conn.close()
+
+    def get_baseline(self, instrument_id: str, timeframe: str):
+        """Zwraca reading_id baseline dla (instrument_id, timeframe) lub None."""
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT last_reading_id FROM instrument_baselines
+                   WHERE instrument_id = ? AND timeframe = ?""",
+                (instrument_id, timeframe),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def get_current_trajectory(self, instrument_id: str, timeframe: str, market_data_timestamp):
+        """Zwraca wszystkie zachowane wersje jednej świecy (instrument_id,
+        timeframe, market_data_timestamp) uporządkowane rosnąco po
+        revision_number. Brak rekordów innych świec i timeframe."""
+        from data.models.instrument_reading import InstrumentReading
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT reading_id, observation_id, instrument_id,
+                          market_data_timestamp, scan_timestamp,
+                          open, high, low, close, volume,
+                          source, prev_reading_id, data_completeness,
+                          revision_number, supersedes_reading_id,
+                          timeframe, candle_state
+                   FROM instrument_readings
+                   WHERE instrument_id = ? AND timeframe = ?
+                     AND market_data_timestamp = ?
+                   ORDER BY revision_number ASC""",
+                (instrument_id, timeframe, market_data_timestamp.isoformat()),
+            )
+            rows = cursor.fetchall()
+            return [
+                InstrumentReading(
+                    reading_id=r[0],
+                    observation_id=r[1],
+                    instrument_id=r[2],
+                    market_data_timestamp=datetime.fromisoformat(r[3]),
+                    scan_timestamp=datetime.fromisoformat(r[4]),
+                    open=r[5],
+                    high=r[6],
+                    low=r[7],
+                    close=r[8],
+                    volume=r[9],
+                    source=r[10],
+                    prev_reading_id=r[11],
+                    data_completeness=r[12],
+                    revision_number=r[13],
+                    supersedes_reading_id=r[14],
+                    timeframe=r[15],
+                    candle_state=r[16],
+                )
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_previous_closed(self, instrument_id: str, timeframe: str, market_data_timestamp):
+        """Zwraca efektywny poprzedni zamknięty Reading (CLOSED) tego samego
+        instrumentu i timeframe, o timestampie wcześniejszym niż bieżący.
+        Wybiera najnowszy timestamp i najwyższą revision_number w jego obrębie.
+        Zwraca None, gdy brak."""
+        from data.models.instrument_reading import InstrumentReading
+
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT reading_id, observation_id, instrument_id,
+                          market_data_timestamp, scan_timestamp,
+                          open, high, low, close, volume,
+                          source, prev_reading_id, data_completeness,
+                          revision_number, supersedes_reading_id,
+                          timeframe, candle_state
+                   FROM instrument_readings
+                   WHERE instrument_id = ? AND timeframe = ?
+                     AND candle_state = 'CLOSED'
+                     AND market_data_timestamp < ?
+                   ORDER BY market_data_timestamp DESC, revision_number DESC
+                   LIMIT 1""",
+                (instrument_id, timeframe, market_data_timestamp.isoformat()),
+            )
+            r = cursor.fetchone()
+            if r is None:
+                return None
+            return InstrumentReading(
+                reading_id=r[0],
+                observation_id=r[1],
+                instrument_id=r[2],
+                market_data_timestamp=datetime.fromisoformat(r[3]),
+                scan_timestamp=datetime.fromisoformat(r[4]),
+                open=r[5],
+                high=r[6],
+                low=r[7],
+                close=r[8],
+                volume=r[9],
+                source=r[10],
+                prev_reading_id=r[11],
+                data_completeness=r[12],
+                revision_number=r[13],
+                supersedes_reading_id=r[14],
+                timeframe=r[15],
+                candle_state=r[16],
+            )
         finally:
             conn.close()
 

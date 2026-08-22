@@ -400,7 +400,7 @@ class TestYahooSessionChart(unittest.TestCase):
         get_call = [c for c in self.transport.calls if c[0] == "GET" and "chart" in c[1]][0]
         params = get_call[2]
         self.assertEqual(params["range"], "5d")
-        self.assertEqual(params["interval"], "5m")
+        self.assertEqual(params["interval"], "1h")
 
     def test_chart_symbol_value_unchanged(self):
         symbol = "AAA.WA"

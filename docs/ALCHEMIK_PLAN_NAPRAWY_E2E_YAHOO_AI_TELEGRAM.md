@@ -128,6 +128,57 @@ Plan zostaje zamknięty wyłącznie wtedy, gdy:
 
 Jest to jednocześnie kryterium ponownego zamrożenia: po zakończeniu, testach i akceptacji E2E moduły zostaną ponownie zamrożone, a czasowe odmrożenie wygasa.
 
+Tryb kontraktowy CONTROLLED_VALIDATION_ONLY (Krok 7B/8, decyzja właściciela 2026-08-20): wyłącznie kontrolny, działa na izolowanej kopii bazy, wymaga dwóch jawnych flag (`--allow-network`, `--confirm-step7`), nie jest sygnałem inwestycyjnym, używa dokładnie jednego `RuntimeService.run_cycle()` i nie jest uruchamiany przez scheduler. Kontrolowany overlay intraday: `close = effective_previous_close × 1.04` oraz minimalne `high = max(real_high, controlled_close)`, z pełnym zapisem wartości przed/po w trace.
+
+## KONTRAKT TRAJEKTORII ŚWIECY 1H (Krok 7C, decyzja właściciela 2026-08-21)
+
+Zatwierdzony kontrakt świecy 1h monitorowanej co 15 minut:
+
+- podstawowym interwałem monitorowania ALCHEMIKA jest świeca 1h;
+- ALCHEMIK kontroluje bieżącą świecę 1h co 15 minut;
+- utrwalane są stany po 15, 30 i 45 minutach oraz stan zamknięcia po 60 minutach;
+- każdy stan jest porównywany z zamknięciem poprzedniej zamkniętej świecy 1h i z poprzednim stanem bieżącej świecy;
+- zachowywana jest kolejność ruchów wewnątrz godziny, a nie wyłącznie końcowy OHLC;
+- timeframe jest częścią tożsamości Readingu; `candle_state` rozróżnia OPEN i CLOSED;
+- `scan_timestamp` oznacza rzeczywisty czas obserwacji; `market_data_timestamp` oznacza początek świecy;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza kolejny stan tej samej świecy 1h, w tym OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje wyłącznie dla późniejszej korekty źródłowej świecy już zamkniętej;
+- następna świeca 1h rozpoczyna `revision_number=1`, a jej `prev_reading_id` wskazuje efektywną końcową wersję poprzedniej świecy;
+- poprzednie zamknięcie 1h jest stałą kotwicą porównania;
+- trajektoria wraz z danymi Huntera, Technical Engine, MasterEngine, Tavily i pozostałych silników trafia do AI;
+- Telegram może zostać uruchomiony wyłącznie po decyzji AI i przejściu naturalnych bramek;
+- chwilowe przekroczenie poprzedniego close nie jest automatycznie wybiciem;
+- podane przez właściciela wartości cenowe są wyłącznie przykładami trajektorii i nie stanowią progów systemu.
+
+Kontrolowany Krok 7 (overlay wariantu B):
+
+- overlay dotyczy potwierdzonej bieżącej otwartej świecy 1h;
+- `controlled_close = effective_previous_close × 1.04`; `controlled_high = max(real_high, controlled_close)`;
+- pozostałe pola pozostają rzeczywistymi danymi Yahoo;
+- trace zapisuje `interval`, `candle_state`, `candle_start`, `expected_close`, `observed_at` oraz `close`/`high` przed i po;
+- jeżeli nie istnieje otwarta świeca 1h, przebieg zatrzymuje się naturalnie;
+- overlay nie wymusza MarketEvent, decyzji AI ani Telegrama;
+- wymagane oznaczenia Telegrama pozostają: `ALCHEMIK — CONTROLLED_VALIDATION_ONLY` oraz `TO NIE JEST SYGNAŁ INWESTYCYJNY.`
+
+Niniejsza decyzja zastępuje wcześniejsze wymaganie nakładania overlayu na ostatnią zamkniętą świecę (Krok 7B, decyzja 2026-08-20, w zakresie obiektu overlayu).
+
+Uzupełnienie decyzji właściciela 2026-08-21 — separacja timeframe i status RETIRED_TIMEFRAME (Wariant A+C zatwierdzony):
+
+- Observation są rozdzielone per `(instrument_id, timeframe)`;
+- baseline jest rozdzielony per `(instrument_id, timeframe)`;
+- historia 5m pozostaje zachowana jako archiwum;
+- 327 historycznych Readingów: późniejszy backfill `timeframe="5m"`, `candle_state="LEGACY_UNKNOWN"`;
+- 171 historycznych ACTIVE Observation 5m: późniejsza kontrolowana migracja do `RETIRED_TIMEFRAME`;
+- 1 Observation `INTEGRITY_BREACHED` pozostaje bez zmian;
+- brak kasowania i nadpisywania historii;
+- pierwsza Observation 1h rozpoczyna niezależny łańcuch;
+- pierwsza kotwica 1h to poprzednia zamknięta świeca `CLOSED`;
+- bieżąca świeca jest osobnym Readingiem `OPEN`;
+- żaden `prev_reading_id`, baseline ani restore 1h nie może wskazywać danych 5m;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza postęp otwartej świecy i przejście OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje korektą źródłową świecy już zamkniętej;
+- szczegóły tabeli baseline oraz implementacja migracji nie są jeszcze opisane w tym dokumencie.
+
 ---
 
 ## OGRANICZENIA ODMROŻENIA

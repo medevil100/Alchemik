@@ -4195,9 +4195,49 @@ Mapowanie wymagań kontraktu na przypadki testowe.
 | Plan walidacji offline | 26, 26.1 | CH-SEC-001 do CH-SEC-010 | kompletne offline |
 | Plan kontrolowanego audytu sieciowego | 27 | CH-NET-001, CH-NET-002 | wymaga sieci |
 
+Kontrakt kontrolnego E2E offline (Krok 7B/8, decyzja właściciela 2026-08-20): pokrycie `tests/test_step7b_controlled_validation_safety.py`, `tests/test_step7b_controlled_e2e_offline.py` oraz rozszerzonego `tests/test_point7_controlled_e2e.py` — wybór efektywnego najnowszego Readingu (najnowszy `market_data_timestamp`, najwyższy `revision_number`, wolumen DESC, symbol ASC), overlay `close=previous×1.04` + minimalne `high=max(real_high, controlled_close)` przed produkcyjną walidacją, budżety przekraczane → `BLOCKED_BY_BUDGET`, dokładnie jedno `RuntimeService.run_cycle()` — etap wykonania OFFLINE_READY (bez sieci), z zachowaniem domyślnego trybu produkcyjnego bez zmian.
+
 Żadne wymaganie kontraktu nie znika bez adnotacji. Wymagania zależne od otwartych decyzji są oznaczone jako zablokowane decyzją właściciela.
 
 Decyzja właściciela z 2026-08-19, wynikająca z rzeczywistego cyklu Yahoo, rozszerza KANON §13.3 pkt 9 i §13.5 pkt 12 o model rewizji InstrumentReading (wyniki domenowe `save_reading`: `ACCEPTED`, `SOURCE_REVISION_ACCEPTED`, `DUPLICATE_NO_OP`, `CONFLICT`, `STALE_TIMESTAMP`; unikalność `(instrument_id, market_data_timestamp, revision_number)`) i zastępuje wcześniejszy zakaz rewizji.
+
+### 23a. Przyszła macierz testów trajektorii świecy 1h (Krok 7C, decyzja właściciela 2026-08-21)
+
+Kategoria: **PROJEKT MACIERZY — DO PÓŹNIEJSZEJ AKCEPTACJI**.
+
+Wymagania test-first dla kontraktu świecy 1h monitorowanej co 15 minut:
+
+1. tożsamość Readingu rozdziela interwały 5m, 30m i 1h przy tym samym symbolu i timestampie;
+2. stany OPEN po 15, 30 i 45 minutach są zapisywane jako uporządkowane rewizje tej samej świecy 1h;
+3. przejście OPEN → CLOSED jest zapisywane jako `CANDLE_PROGRESS_ACCEPTED`;
+4. następna świeca 1h rozpoczyna `revision_number=1`, a jej `prev_reading_id` wskazuje efektywną końcową wersję poprzedniej świecy;
+5. `SOURCE_REVISION_ACCEPTED` występuje dopiero po CLOSED (późniejsza korekta źródłowa świecy zamkniętej);
+6. porównanie z poprzednim close (kotwica) i poprzednim stanem bieżącej świecy;
+7. zachowanie kolejności ruchów wewnątrz godziny;
+8. przekazanie trajektorii do kontekstu AI (wraz z danymi Huntera, Technical Engine, MasterEngine, Tavily i pozostałych silników);
+9. brak Telegrama przed decyzją AI i przejściem naturalnych bramek;
+10. pełna etykieta kontrolna bez duplikacji:
+    - `ALCHEMIK — CONTROLLED_VALIDATION_ONLY`;
+    - `TO NIE JEST SYGNAŁ INWESTYCYJNY.`;
+11. brak overlayu, gdy nie istnieje otwarta świeca 1h (przebieg zatrzymuje się naturalnie);
+12. pełnosystemowy test na prawdziwym RuntimeService i tymczasowej SQLite (jedno `RuntimeService.run_cycle()`).
+
+#### 23a.1 Uzupełnienie decyzji właściciela 2026-08-21 — separacja timeframe i status RETIRED_TIMEFRAME (Wariant A+C zatwierdzony)
+
+- Observation są rozdzielone per `(instrument_id, timeframe)`;
+- baseline jest rozdzielony per `(instrument_id, timeframe)`;
+- historia 5m pozostaje zachowana jako archiwum;
+- 327 historycznych Readingów: późniejszy backfill `timeframe="5m"`, `candle_state="LEGACY_UNKNOWN"`;
+- 171 historycznych ACTIVE Observation 5m: późniejsza kontrolowana migracja do `RETIRED_TIMEFRAME`;
+- 1 Observation `INTEGRITY_BREACHED` pozostaje bez zmian;
+- brak kasowania i nadpisywania historii;
+- pierwsza Observation 1h rozpoczyna niezależny łańcuch;
+- pierwsza kotwica 1h to poprzednia zamknięta świeca `CLOSED`;
+- bieżąca świeca jest osobnym Readingiem `OPEN`;
+- żaden `prev_reading_id`, baseline ani restore 1h nie może wskazywać danych 5m;
+- `CANDLE_PROGRESS_ACCEPTED` oznacza postęp otwartej świecy i przejście OPEN → CLOSED;
+- `SOURCE_REVISION_ACCEPTED` pozostaje korektą źródłową świecy już zamkniętej;
+- szczegóły tabeli baseline oraz implementacja migracji nie są jeszcze opisane w tym dokumencie.
 
 ---
 

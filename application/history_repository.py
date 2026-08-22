@@ -7,16 +7,18 @@ class HistoryRepository:
         self._readings = {}
         self._universe = {}
         self._snapshots = {}
+        self._baselines = {}
 
     # ------------------------------------------------------------------
     # Kontrakt trwałości InstrumentReading / InstrumentObservation
     # ------------------------------------------------------------------
 
-    def _latest_revision(self, instrument_id: str, market_data_timestamp):
-        """Najnowsza rewizja dla tożsamości (instrument_id, timestamp) lub None."""
+    def _latest_revision(self, instrument_id: str, timeframe: str, market_data_timestamp):
+        """Najnowsza rewizja dla tożsamości (instrument_id, timeframe, timestamp) lub None."""
         versions = [
             r for r in self._readings.values()
             if r.instrument_id == instrument_id
+            and r.timeframe == timeframe
             and r.market_data_timestamp == market_data_timestamp
         ]
         if not versions:
@@ -25,30 +27,29 @@ class HistoryRepository:
 
     def save_reading(self, observation, reading) -> str:
         """
-        Atomowo zapisz InstrumentObservation i InstrumentReading z obsługą rewizji.
+        Atomowo zapisz InstrumentObservation i InstrumentReading z obsługą rewizji,
+        timeframe i candle_state (Krok 7C).
 
         Zwraca dokładnie jeden z wyników:
-          * ``ACCEPTED``                 — nowy fakt (revision 1, supersedes NULL)
-          * ``DUPLICATE_NO_OP``          — identyczny timestamp i treść, bez zmian
-          * ``SOURCE_REVISION_ACCEPTED`` — zmieniona treść tego samego timestampu,
-                                            instrumentu, Observation i źródła;
-                                            nowa rewizja z supersedes_reading_id
-          * ``CONFLICT``                 — obca tożsamość, uszkodzone supersedes
-                                            albo ta sama tożsamość, inna treść;
-                                            Observation → INTEGRITY_BREACHED
-          * ``STALE_TIMESTAMP``          — starszy timestamp, odrzucony bez
-                                            naruszenia integralności
+          * ``ACCEPTED``                 — nowy timestamp (revision 1, supersedes NULL)
+          * ``DUPLICATE_NO_OP``          — identyczny timestamp, treść i candle_state
+          * ``SOURCE_REVISION_ACCEPTED`` — korekta źródłowa świecy już zamkniętej
+          * ``CANDLE_PROGRESS_ACCEPTED`` — postęp tej samej świecy 1h (OPEN→OPEN/CLOSED)
+          * ``CONFLICT``                 — obca tożsamość, uszkodzone supersedes,
+                                            cofnięcie CLOSED→OPEN albo konflikt treści
+          * ``STALE_TIMESTAMP``          — starszy timestamp, odrzucony bez naruszenia
         """
         instrument_id = observation.instrument_id
-        observation_id = observation.observation_id
         market_ts = reading.market_data_timestamp
+        timeframe = reading.timeframe
+        candle_state = reading.candle_state
 
         # Obca tożsamość instrumentu → CONFLICT (nie jest rewizją)
         if reading.instrument_id != instrument_id:
             return "CONFLICT"
 
         # Check for existing latest revision with same identity
-        existing = self._latest_revision(instrument_id, market_ts)
+        existing = self._latest_revision(instrument_id, timeframe, market_ts)
         if existing is not None:
             same_content = (
                 reading.open == existing.open
@@ -59,6 +60,7 @@ class HistoryRepository:
                 and reading.data_completeness == existing.data_completeness
                 and reading.source == existing.source
             )
+            same_state = reading.candle_state == existing.candle_state
 
             reference = reading.supersedes_reading_id
             valid_ref = (
@@ -66,22 +68,54 @@ class HistoryRepository:
                 or reference == existing.reading_id
             )
 
-            if same_content:
-                # Identyczna treść — rewizja niepotrzebna; uszkodzone
+            if same_content and same_state:
+                # Identyczna treść i stan — rewizja niepotrzebna; uszkodzone
                 # supersedes przy identycznej treści = CONFLICT.
                 return "DUPLICATE_NO_OP" if valid_ref else "CONFLICT"
+
+            # Cofnięcie zamkniętej świecy do OPEN (ten sam timestamp) jest
+            # odrzucane zgodnie z kontraktem trajektorii — nie jest postępem.
+            if existing.candle_state == "CLOSED" and candle_state == "OPEN":
+                return "CONFLICT"
 
             # Zmieniona treść tego samego timestampu.
             if (reading.observation_id != existing.observation_id) or (reading.source != existing.source):
                 observation.terminate("INTEGRITY_BREACHED", "Content conflict")
-                self._observations[instrument_id] = observation
+                self._observations[(instrument_id, timeframe)] = observation
                 return "CONFLICT"
 
             if not valid_ref:
                 # Uszkodzone supersedes przy zmienionej treści → CONFLICT.
                 return "CONFLICT"
 
-            # Poprawna rewizja źródła: ta sama tożsamość, Observation i źródło.
+            # Krok 7C: postęp świecy 1h (OPEN→OPEN lub OPEN→CLOSED).
+            if timeframe == "1h" and existing.candle_state in ("OPEN", "LEGACY_UNKNOWN"):
+                from data.models.instrument_reading import InstrumentReading
+                new_revision = existing.revision_number + 1
+                progress = InstrumentReading(
+                    reading_id=reading.reading_id,
+                    observation_id=reading.observation_id,
+                    instrument_id=reading.instrument_id,
+                    market_data_timestamp=reading.market_data_timestamp,
+                    scan_timestamp=reading.scan_timestamp,
+                    open=reading.open,
+                    high=reading.high,
+                    low=reading.low,
+                    close=reading.close,
+                    volume=reading.volume,
+                    source=reading.source,
+                    prev_reading_id=existing.reading_id,
+                    data_completeness=reading.data_completeness,
+                    revision_number=new_revision,
+                    supersedes_reading_id=existing.reading_id,
+                    timeframe=timeframe,
+                    candle_state=candle_state,
+                )
+                self._observations[(instrument_id, timeframe)] = observation
+                self._readings[(instrument_id, timeframe, market_ts, new_revision)] = progress
+                return "CANDLE_PROGRESS_ACCEPTED"
+
+            # Poprawna rewizja źródła świecy zamkniętej (CLOSED→CLOSED).
             # InstrumentReading jest immutable — tworzymy nowy obiekt z polami rewizji.
             from data.models.instrument_reading import InstrumentReading
             new_revision = existing.revision_number + 1
@@ -101,22 +135,27 @@ class HistoryRepository:
                 data_completeness=reading.data_completeness,
                 revision_number=new_revision,
                 supersedes_reading_id=existing.reading_id,
+                timeframe=timeframe,
+                candle_state=candle_state,
             )
-            self._observations[instrument_id] = observation
-            self._readings[(instrument_id, market_ts, new_revision)] = source_revision
+            self._observations[(instrument_id, timeframe)] = observation
+            self._readings[(instrument_id, timeframe, market_ts, new_revision)] = source_revision
             return "SOURCE_REVISION_ACCEPTED"
 
-        # Check for STALE_TIMESTAMP
+        # Check for STALE_TIMESTAMP (per timeframe)
         for stored_rdg in self._readings.values():
-            if stored_rdg.instrument_id == instrument_id:
+            if stored_rdg.instrument_id == instrument_id and stored_rdg.timeframe == timeframe:
                 if market_ts < stored_rdg.market_data_timestamp:
                     return "STALE_TIMESTAMP"
 
         # Determine prev_reading_id — najnowsza rewizja najnowszego timestampu
+        # wyłącznie w obrębie tego samego instrumentu, Observation i timeframe.
         prev_reading_id = None
         instrument_readings = [
             r for r in self._readings.values()
             if r.instrument_id == instrument_id
+            and r.observation_id == observation.observation_id
+            and r.timeframe == timeframe
         ]
         if instrument_readings:
             latest_rdg = max(
@@ -126,7 +165,7 @@ class HistoryRepository:
             prev_reading_id = latest_rdg.reading_id
 
         # Store observation
-        self._observations[instrument_id] = observation
+        self._observations[(instrument_id, timeframe)] = observation
 
         # Store reading (revision 1, supersedes NULL)
         # InstrumentReading jest immutable — tworzymy nowy obiekt z polami rewizji.
@@ -147,8 +186,10 @@ class HistoryRepository:
             data_completeness=reading.data_completeness,
             revision_number=1,
             supersedes_reading_id=None,
+            timeframe=timeframe,
+            candle_state=candle_state,
         )
-        self._readings[(instrument_id, market_ts, 1)] = accepted_reading
+        self._readings[(instrument_id, timeframe, market_ts, 1)] = accepted_reading
         return "ACCEPTED"
 
     # ------------------------------------------------------------------
@@ -204,6 +245,68 @@ class HistoryRepository:
         """Jawne odtworzenie uniwersum po restarcie (pamięciowe)."""
         return self.get_current_universe()
 
+    def save_baseline(self, instrument_id: str, timeframe: str, reading_id: str) -> str:
+        """Zapisuje trwały baseline per (instrument_id, timeframe) wskazujący
+        istniejący Reading tego samego instrumentu i timeframe.
+
+        Wyniki:
+          * ``BASELINE_ACCEPTED``  — pierwszy baseline (niezmienny);
+          * ``BASELINE_UNCHANGED`` — ponowny zapis tego samego baseline;
+          * ``BASELINE_CONFLICT``  — próba podmiany istniejącego baseline
+            innym Readingiem, albo Reading spoza timeframe/instrumentu.
+        """
+        reading = next(
+            (r for r in self._readings.values() if r.reading_id == reading_id),
+            None,
+        )
+        if reading is None:
+            return "BASELINE_CONFLICT"
+        if reading.instrument_id != instrument_id or reading.timeframe != timeframe:
+            return "BASELINE_CONFLICT"
+
+        key = (instrument_id, timeframe)
+        existing = self._baselines.get(key)
+        if existing is None:
+            self._baselines[key] = reading_id
+            return "BASELINE_ACCEPTED"
+        if existing == reading_id:
+            return "BASELINE_UNCHANGED"
+        return "BASELINE_CONFLICT"
+
+    def get_baseline(self, instrument_id: str, timeframe: str):
+        """Zwraca reading_id baseline dla (instrument_id, timeframe) lub None."""
+        return self._baselines.get((instrument_id, timeframe))
+
+    def get_current_trajectory(self, instrument_id: str, timeframe: str, market_data_timestamp):
+        """Zwraca wszystkie zachowane wersje jednej świecy (instrument_id,
+        timeframe, market_data_timestamp) uporządkowane rosnąco po
+        revision_number. Brak rekordów innych świec i timeframe."""
+        versions = [
+            r for r in self._readings.values()
+            if r.instrument_id == instrument_id
+            and r.timeframe == timeframe
+            and r.market_data_timestamp == market_data_timestamp
+        ]
+        return sorted(versions, key=lambda r: r.revision_number)
+
+    def get_previous_closed(self, instrument_id: str, timeframe: str, market_data_timestamp):
+        """Zwraca efektywny poprzedni zamknięty Reading (CLOSED) tego samego
+        instrumentu i timeframe, o timestampie wcześniejszym niż bieżący.
+        Wybiera najnowszy timestamp i najwyższą revision_number w jego obrębie.
+        Zwraca None, gdy brak."""
+        closed = [
+            r for r in self._readings.values()
+            if r.instrument_id == instrument_id
+            and r.timeframe == timeframe
+            and r.candle_state == "CLOSED"
+            and r.market_data_timestamp < market_data_timestamp
+        ]
+        if not closed:
+            return None
+        latest_ts = max(r.market_data_timestamp for r in closed)
+        latest_versions = [r for r in closed if r.market_data_timestamp == latest_ts]
+        return max(latest_versions, key=lambda r: r.revision_number)
+
     def load_observation(self, instrument_id: str):
         """
         Wczytaj ACTIVE InstrumentObservation po instrument_id.
@@ -211,26 +314,29 @@ class HistoryRepository:
         Zwraca ``InstrumentObservation`` lub ``None``, jeżeli instrument
         nie ma ACTIVE Observation.
         """
-        obs = self._observations.get(instrument_id)
-        if obs is not None and obs.state == "ACTIVE":
-            return obs
+        for (iid, _), obs in self._observations.items():
+            if iid == instrument_id and obs.state == "ACTIVE":
+                return obs
         return None
 
     def restore_active_observations(self) -> list:
         """
         Przywróć wszystkie ACTIVE Observations wraz z ich ostatnim
         zaakceptowanym Readingiem (wg największego market_data_timestamp,
-        a dla tego samego timestampu — najwyższego revision_number).
+        a dla tego samego timestampu — najwyższego revision_number),
+        bez mieszania timeframe i Observation.
 
         Zwraca listę krotek ``(InstrumentObservation, InstrumentReading)``.
         """
         results = []
-        for instrument_id, obs in self._observations.items():
+        for (instrument_id, timeframe), obs in self._observations.items():
             if obs.state != "ACTIVE":
                 continue
             instrument_readings = [
                 r for r in self._readings.values()
                 if r.instrument_id == instrument_id
+                and r.observation_id == obs.observation_id
+                and r.timeframe == timeframe
             ]
             if not instrument_readings:
                 continue

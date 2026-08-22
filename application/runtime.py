@@ -112,58 +112,194 @@ class RuntimeService:
             return []
         return self.history_repository.restore_active_observations()
 
+    def _load_observation_for_timeframe(self, instrument_id: str, timeframe: str):
+        """Wczytaj ACTIVE Observation dla instrumentu i timeframe (kompatybilnie)."""
+        if not hasattr(self.history_repository, 'load_observation'):
+            return None
+        try:
+            return self.history_repository.load_observation(instrument_id, timeframe)
+        except TypeError:
+            return self.history_repository.load_observation(instrument_id)
+
+    @staticmethod
+    def _reading_to_state_dict(reading) -> dict:
+        """Zserializuj jeden Reading do faktu trajektorii (bez interpretacji)."""
+        return {
+            "timeframe": reading.timeframe,
+            "instrument_id": reading.instrument_id,
+            "reading_id": reading.reading_id,
+            "market_data_timestamp": reading.market_data_timestamp.isoformat(),
+            "scan_timestamp": reading.scan_timestamp.isoformat(),
+            "candle_state": reading.candle_state,
+            "revision_number": reading.revision_number,
+            "open": reading.open,
+            "high": reading.high,
+            "low": reading.low,
+            "close": reading.close,
+            "volume": reading.volume,
+            "supersedes_reading_id": reading.supersedes_reading_id,
+            "prev_reading_id": reading.prev_reading_id,
+        }
+
+    def _build_candle_trajectory_1h(self, instrument_id: str, candle_start) -> dict:
+        """Buduje wierny, wyłącznie faktyczny kontekst trajektorii 1h.
+
+        Używa get_previous_closed + get_current_trajectory repozytorium
+        (bez odczytu prywatnych struktur). Żadnych progów ani interpretacji.
+        """
+        repo = self.history_repository
+        previous_closed = None
+        if hasattr(repo, "get_previous_closed"):
+            previous_closed = repo.get_previous_closed(instrument_id, "1h", candle_start)
+
+        trajectory = []
+        if hasattr(repo, "get_current_trajectory"):
+            trajectory = repo.get_current_trajectory(instrument_id, "1h", candle_start)
+
+        previous_closed_close = previous_closed.close if previous_closed is not None else None
+        previous_state_close = None
+        previous_state_close_running = None
+
+        states = []
+        for reading in trajectory:
+            close = reading.close
+            state = self._reading_to_state_dict(reading)
+            state["previous_state_close"] = previous_state_close_running
+            state["previous_closed_close"] = previous_closed_close
+            state["close_delta_vs_previous_state"] = (
+                round(close - previous_state_close_running, 10)
+                if previous_state_close_running is not None
+                else None
+            )
+            state["close_delta_vs_previous_closed"] = (
+                round(close - previous_closed_close, 10)
+                if previous_closed_close is not None
+                else None
+            )
+            states.append(state)
+            previous_state_close_running = close
+
+        result = {
+            "timeframe": "1h",
+            "instrument_id": instrument_id,
+            "candle_start": candle_start.isoformat(),
+            "previous_closed": (
+                self._reading_to_state_dict(previous_closed)
+                if previous_closed is not None
+                else None
+            ),
+            "previous_closed_close": previous_closed_close,
+            "states": states,
+        }
+        return result
+
+    def _attach_candle_trajectory_to_event(self, event, context: dict) -> None:
+        """Dodaj trajektorię 1h do istniejącego ai_context eventu bez nadpisywania."""
+        ai_context = getattr(event, "ai_context", None)
+        if ai_context is None:
+            ai_context = {}
+            event.ai_context = ai_context
+        ai_context["candle_trajectory_1h"] = context
+
     def _persist_observation_and_reading_full(
         self, instrument_id: str, ohlcv_data: List[MarketData]
     ):
-        """Utrwala Observation i Reading i zwraca (result, reading, observation).
+        """Utrwala Observation, Readingi i baseline per timeframe (Krok 4/8).
 
-        Addytywny odpowiednik _persist_observation_and_reading używany przez
-        produkcyjny cykl matrycy (Krok 4/8). Nie zmienia istniejącej metody.
+        Dla intraday 1h zapisuje chronologicznie:
+          * poprzednią świecę CLOSED jako kotwicę 1h (revision 1, prev=None)
+            i ustawia ją jako baseline 1h (pierwszy, niezmienny);
+          * bieżącą świecę OPEN jako osobny Reading, revision 1,
+            prev_reading_id = kotwica.
+
+        Zwraca (result, reading, observation) ostatniego zapisanego Readingu.
+        Addytywny odpowiednik _persist_observation_and_reading — nie zmienia
+        istniejącej metody.
         """
         if not ohlcv_data:
             return None, None, None
         if not hasattr(self.history_repository, 'save_reading'):
             return None, None, None
 
-        latest = max(ohlcv_data, key=lambda md: md.timestamp)
-        has_ohlc = (
-            latest.open is not None
-            and latest.high is not None
-            and latest.low is not None
-            and latest.close is not None
-        )
-        completeness = "COMPLETE" if has_ohlc else "PARTIAL"
+        ordered = sorted(ohlcv_data, key=lambda md: md.timestamp)
+        latest = ordered[-1]
+        timeframe = getattr(latest, 'timeframe', None) or "LEGACY_UNKNOWN"
 
-        observation = None
-        if hasattr(self.history_repository, 'load_observation'):
-            observation = self.history_repository.load_observation(instrument_id)
+        # Wybór pary CLOSED→OPEN: tylko ostatnia OPEN oraz najbliższa
+        # wcześniejsza CLOSED. Starsza historia payloadu 5d/1h nie jest
+        # zapisywana (nie jest ani Reading, ani baseline).
+        selected = []
+        if latest.candle_state == "OPEN":
+            previous_closed = next(
+                (
+                    row for row in reversed(ordered[:-1])
+                    if getattr(row, 'candle_state', None) == "CLOSED"
+                ),
+                None,
+            )
+            if previous_closed is not None:
+                selected = [previous_closed, latest]
+            else:
+                selected = [latest]
+        else:
+            selected = [latest]
+
+        observation = self._load_observation_for_timeframe(instrument_id, timeframe)
         if observation is None:
             observation = InstrumentObservation(
                 observation_id=str(uuid.uuid4()),
                 instrument_id=instrument_id,
+                timeframe=timeframe,
             )
 
-        reading = InstrumentReading(
-            reading_id=str(uuid.uuid4()),
-            observation_id=observation.observation_id,
-            instrument_id=instrument_id,
-            market_data_timestamp=latest.timestamp,
-            scan_timestamp=datetime.now(timezone.utc),
-            open=latest.open,
-            high=latest.high,
-            low=latest.low,
-            close=latest.close,
-            volume=latest.volume,
-            data_completeness=completeness,
-        )
-        result = self.history_repository.save_reading(observation, reading)
-        if result in ("ACCEPTED", "SOURCE_REVISION_ACCEPTED"):
-            return result, reading, observation
+        last_result = None
+        last_reading = None
+        baseline_set = False
+
+        for row in selected:
+            row_timeframe = getattr(row, 'timeframe', None) or timeframe
+            candle_state = getattr(row, 'candle_state', None) or "LEGACY_UNKNOWN"
+            has_ohlc = (
+                row.open is not None
+                and row.high is not None
+                and row.low is not None
+                and row.close is not None
+            )
+            completeness = "COMPLETE" if has_ohlc else "PARTIAL"
+
+            reading = InstrumentReading(
+                reading_id=str(uuid.uuid4()),
+                observation_id=observation.observation_id,
+                instrument_id=instrument_id,
+                market_data_timestamp=row.timestamp,
+                scan_timestamp=datetime.now(timezone.utc),
+                open=row.open,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+                volume=row.volume,
+                data_completeness=completeness,
+                timeframe=row_timeframe,
+                candle_state=candle_state,
+            )
+            last_result = self.history_repository.save_reading(observation, reading)
+            last_reading = reading
+
+            if not baseline_set and candle_state == "CLOSED":
+                if hasattr(self.history_repository, 'save_baseline'):
+                    self.history_repository.save_baseline(
+                        instrument_id, row_timeframe, reading.reading_id,
+                    )
+                baseline_set = True
+
+        if last_result in ("ACCEPTED", "CANDLE_PROGRESS_ACCEPTED", "SOURCE_REVISION_ACCEPTED"):
+            return last_result, last_reading, observation
+
         active = self.history_repository.restore_active_observations()
         for obs, rdg in active:
-            if rdg.instrument_id == instrument_id:
-                return result, rdg, obs
-        return result, None, None
+            if rdg.instrument_id == instrument_id and rdg.timeframe == timeframe:
+                return last_result, rdg, obs
+        return last_result, None, None
 
     def _is_production_yahoo_discovery(self) -> bool:
         """Czy bieżące źródło uniwersum to produkcyjny YahooDiscoverySource."""
@@ -308,6 +444,7 @@ class RuntimeService:
             "baseline_created": 0,
             "readings_saved": 0,
             "revisions_saved": 0,
+            "candle_progress_saved": 0,
             "unchanged": 0,
             "changed": 0,
             "skipped_downstream": 0,
@@ -451,6 +588,7 @@ class RuntimeService:
         baseline_created = 0
         readings_saved = 0
         revisions_saved = 0
+        candle_progress_saved = 0
         unchanged = 0
         changed = 0
         changed_symbols: List[str] = []
@@ -484,6 +622,13 @@ class RuntimeService:
             if result == "ACCEPTED":
                 readings_saved += 1
                 recorder.instrument_update(sym, reading_status="ACCEPTED", observation_status=SUCCESS)
+            elif result == "CANDLE_PROGRESS_ACCEPTED":
+                # Postęp bieżącej świecy 1h (OPEN→OPEN/CLOSED) to akceptowany,
+                # zmieniony stan wymagający dalszego przetwarzania. Postęp
+                # świecy liczy wyłącznie candle_progress_saved, a nie
+                # revisions_saved (który pozostaje licznikiem rewizji źródła).
+                candle_progress_saved += 1
+                recorder.instrument_update(sym, reading_status="CANDLE_PROGRESS_ACCEPTED", observation_status=SUCCESS)
             elif result == "SOURCE_REVISION_ACCEPTED":
                 # Rewizja źródła jest liczona oddzielnie od nowych Readingów.
                 revisions_saved += 1
@@ -498,8 +643,9 @@ class RuntimeService:
 
         diagnostics["readings_saved"] = readings_saved
         diagnostics["revisions_saved"] = revisions_saved
+        diagnostics["candle_progress_saved"] = candle_progress_saved
         diagnostics["saved_count"] = readings_saved
-        diagnostics["accepted_count"] = readings_saved + revisions_saved
+        diagnostics["accepted_count"] = readings_saved + revisions_saved + candle_progress_saved
         diagnostics["skipped_unchanged_count"] = unchanged
 
         # Porównanie nowego odczytu z ostatnim trwałym Readingiem tego samego symbolu.
@@ -613,6 +759,21 @@ class RuntimeService:
             detected_events: List[MarketEvent] = []
             try:
                 recorder.stage_start("master")
+
+                # Krok 7C — zbuduj wierny kontekst trajektorii 1h po trwałym
+                # zapisie Readingu i PRZED analizą zdarzenia, aby prawdziwy
+                # MasterEngine mógł umieścić go w payloadzie przekazywanym do
+                # granicy OpenAI. Kontekst jest dołączany do każdego
+                # MarketEvent wewnątrz MasterEngine (przed budową payloadu),
+                # bez tworzenia drugiego MarketEvent i bez drugiego run_analysis.
+                traj_context = None
+                reading_for_traj = new_readings.get(candidate.instrument_id)
+                if reading_for_traj is not None and getattr(reading_for_traj, "timeframe", None) == "1h":
+                    traj_context = self._build_candle_trajectory_1h(
+                        candidate.instrument_id,
+                        reading_for_traj.market_data_timestamp,
+                    )
+
                 result = self.master_engine.run_analysis(
                     candidate.instrument_id,
                     market=market,
@@ -620,10 +781,16 @@ class RuntimeService:
                     events_out=detected_events,
                     ohlcv_data=candidate_ohlcv,
                     trace=recorder,
+                    trajectory_context=traj_context,
                 )
                 recorder.stage_end("master", SUCCESS, output_count=1)
                 results.append(result)
                 success_count += 1
+
+                # Kontekst trajektorii 1h jest już dołączony do ai_context
+                # każdego MarketEvent wewnątrz MasterEngine (przed budową
+                # payloadu OpenAI); nie dołączamy go ponownie po analizie.
+
                 if detected_events:
                     all_detected_events.extend(detected_events)
 

@@ -14,6 +14,10 @@ class MarketData:
         close (float): Closing price of the period
         volume (float): Trading volume during the period
         timestamp (datetime): Date and time of the data point
+        timeframe (Optional[str]): Krok 7C — kanoniczny interwał (np. "1h").
+        candle_state (Optional[str]): Krok 7C — "OPEN" albo "CLOSED".
+        observed_at (Optional[datetime]): Krok 7C — jeden wspólny czas obserwacji
+            użyty do klasyfikacji stanu świecy.
     """
     open: float
     high: float
@@ -21,6 +25,9 @@ class MarketData:
     close: float
     volume: float
     timestamp: datetime
+    timeframe: Optional[str] = None
+    candle_state: Optional[str] = None
+    observed_at: Optional[datetime] = None
 
     @classmethod
     def from_dict(cls, data: dict):
