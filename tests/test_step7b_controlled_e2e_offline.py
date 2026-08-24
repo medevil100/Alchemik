@@ -411,6 +411,11 @@ class RecordingYahooBoundary:
             base_ts = int(T0.timestamp())
             ts = self._intraday_ts if self._intraday_ts is not None else base_ts + 3600
             close = self._intraday_close
+            # 7F: anchor overlayu wymaga poprzedniej CLOSED 1h w payloadzie —
+            # zwracamy CLOSED (T0) przed OPEN (T0+1h), aby kontrakt testu
+            # jednoznacznie odzwierciedlał nową regułę.
+            closed_ts = base_ts
+            open_ts = ts
             return self.FetchResult(
                 kind=self.OutcomeKind.SUCCESS_WITH_DATA,
                 data={
@@ -419,12 +424,12 @@ class RecordingYahooBoundary:
                     "captured_at": T0.isoformat(),
                     "meta": {"symbol": symbol, "instrumentType": "EQUITY",
                              "currency": "PLN", "exchangeName": "WSE"},
-                    "timestamp": [ts],
-                    "open": [4.2],
-                    "high": [4.3],
-                    "low": [4.05],
-                    "close": [close],
-                    "volume": [300],
+                    "timestamp": [closed_ts, open_ts],
+                    "open": [4.0, 4.2],
+                    "high": [4.1, 4.3],
+                    "low": [3.9, 4.05],
+                    "close": [4.0, close],
+                    "volume": [200, 300],
                     "events": {},
                 },
                 message=None,
@@ -584,8 +589,9 @@ class TestControlledFullPipelineExecution:
             # Ta sama ACTIVE Observation (prawdziwe repository ładuje istniejącą
             # przez load_observation() i NIE tworzy duplikatu).
             assert obs_after == obs_before
-            # Reading wzrósł (nowy Reading po overlayu) — dokładnie 1 nowy.
-            assert readings_after - readings_before == 1
+            # Reading wzrósł o dokładnie 2: nowa CLOSED 1h + nowy OPEN 1h
+            # z overlayem (anchor CLOSED 1h z tego samego payloadu intraday).
+            assert readings_after - readings_before == 2
             # Brak nowych MarketEvent (przy naturalnym braku alertów nie
             # wymuszamy zdarzeń).
             assert events_after == events_before
@@ -802,6 +808,297 @@ class _ClosedOnlyYahooBoundary:
         raise AssertionError("unknown variant {} - outside the contract".format(variant))
 
 
+class TestOverlayAnchorClosed1h:
+    """7F: anchor overlayu pochodzi WYŁĄCZNIE z payloadu intraday 1h
+    (najnowsza OPEN + najbliższa wcześniejsza CLOSED 1h). Reading 5m
+    (trwały historyczny close 8.75) NIE MOŻE być źródłem previous_close."""
+
+    @staticmethod
+    def _session(boundary, observed, previous_close=8.75):
+        from application.controlled_validation import (
+            ControlledYahooSession, YahooBudgetGuard,
+        )
+        return ControlledYahooSession(
+            boundary, YahooBudgetGuard(), previous_close=previous_close,
+            symbol="AAA.WA", clock=_FakeClock([observed]),
+        )
+
+    def test_close_is_8_57376_not_9_1_with_historical_5m_8_75(self):
+        """Payload Yahoo: CLOSED 1h close=8.244 (11:00) + OPEN 1h (12:00).
+        Trwały Reading 5m close=8.75 istnieje, ale anchor musi pochodzić
+        z CLOSED 1h: controlled_close = 8.244*1.04 = 8.57376."""
+        import copy as _copy
+        from data.yahoo.yahoo_session import FetchResult, OutcomeKind
+
+        class _TwoCandleBoundary:
+            def __init__(self, closed_ts, open_ts):
+                self.closed_ts = closed_ts
+                self.open_ts = open_ts
+                self.returned_raw = None
+
+            def fetch_chart(self, symbol, variant="daily"):
+                if variant != "intraday":
+                    raise AssertionError(f"unexpected variant {variant}")
+                payload = {
+                    "variant": "intraday", "http_status": 200,
+                    "captured_at": T0.isoformat(),
+                    "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                             "currency": "PLN", "exchangeName": "WSE"},
+                    "timestamp": [int(self.closed_ts.timestamp()),
+                                  int(self.open_ts.timestamp())],
+                    "open": [8.25, 8.24],
+                    "high": [8.30, 8.26],
+                    "low": [8.20, 8.22],
+                    "close": [8.244, 8.24],
+                    "volume": [100.0, 150.0],
+                    "events": {},
+                }
+                self.returned_raw = _copy.deepcopy(payload)
+                return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                                   data=payload, message=None)
+
+        observed = T0 + timedelta(minutes=15)      # 12:15
+        closed_ts = T0 - timedelta(hours=1)        # 11:00 CLOSED
+        open_ts = T0                               # 12:00 OPEN
+        boundary = _TwoCandleBoundary(closed_ts, open_ts)
+        session = self._session(boundary, observed, previous_close=8.75)
+        result = session.fetch_chart("AAA.WA", variant="intraday")
+
+        from data.yahoo.yahoo_session import OutcomeKind
+        assert result.kind == OutcomeKind.SUCCESS_WITH_DATA
+        assert session.overlay_applied is True
+        data = result.data
+        expected = 8.244 * 1.04
+        assert expected == pytest.approx(8.57376)
+        assert data["close"][-1] == pytest.approx(expected)
+        assert data["close"][-1] != pytest.approx(8.75 * 1.04)
+        assert data["high"][-1] == pytest.approx(max(8.26, expected))
+        # Niezmienność open/low/volume/timestamp na świecy OPEN.
+        assert data["open"][-1] == pytest.approx(8.24)
+        assert data["low"][-1] == pytest.approx(8.22)
+        assert data["volume"][-1] == pytest.approx(150.0)
+        assert data["timestamp"][-1] == int(open_ts.timestamp())
+        # Reading 5m (8.75) nie jest źródłem anchoru.
+        assert session.overlay_state["effective_previous_close"] == pytest.approx(8.244)
+        assert session.overlay_state["anchor_source"] == "YAHOO_PREVIOUS_CLOSED_1H"
+        assert session.overlay_state["anchor_index"] == 0
+        assert session.overlay_state["anchor_candle_state"] == "CLOSED"
+        assert session.overlay_state["interval"] == "1h"
+        assert session.overlay_state["open_index"] == 1
+        assert session.overlay_state["status"] == "APPLIED"
+
+    def test_open_without_previous_closed_1h_returns_no_data(self):
+        """Payload zawiera wyłącznie OPEN 1h (brak wcześniejszej CLOSED 1h):
+        overlay NIE jest wykonywany; status NO_PREVIOUS_CLOSED_1H_ANCHOR
+        i naturalny stop przez SUCCESS_NO_DATA."""
+        import copy as _copy
+        from data.yahoo.yahoo_session import FetchResult, OutcomeKind
+
+        class _OpenOnlyBoundary:
+            def __init__(self, open_ts):
+                self.open_ts = open_ts
+                self.returned_raw = None
+
+            def fetch_chart(self, symbol, variant="daily"):
+                if variant != "intraday":
+                    raise AssertionError(f"unexpected variant {variant}")
+                payload = {
+                    "variant": "intraday", "http_status": 200,
+                    "captured_at": T0.isoformat(),
+                    "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                             "currency": "PLN", "exchangeName": "WSE"},
+                    "timestamp": [int(self.open_ts.timestamp())],
+                    "open": [8.24], "high": [8.26], "low": [8.22],
+                    "close": [8.24], "volume": [150.0], "events": {},
+                }
+                self.returned_raw = _copy.deepcopy(payload)
+                return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                                   data=payload, message=None)
+
+        observed = T0 + timedelta(minutes=15)      # 12:15
+        boundary = _OpenOnlyBoundary(T0)           # jedyna świeca = OPEN 12:00
+        session = self._session(boundary, observed, previous_close=8.75)
+        result = session.fetch_chart("AAA.WA", variant="intraday")
+
+        from data.yahoo.yahoo_session import OutcomeKind
+        assert result.kind == OutcomeKind.SUCCESS_NO_DATA
+        assert result.data is None
+        assert session.overlay_applied is False
+        assert session.overlay_state["status"] == "NO_PREVIOUS_CLOSED_1H_ANCHOR"
+        assert session.overlay_state["applied"] is False
+        assert session.overlay_state["raw_preserved"] is True
+        # Surowe dane granicy pozostały niezmienione.
+        assert boundary.returned_raw["close"] == [8.24]
+        assert boundary.returned_raw["high"] == [8.26]
+
+    def test_overlay_trace_fields_persisted(self, tmp_path, controlled_full_db):
+        """Pełny kontrolowany trace zawiera trwale wymagane pola overlayu:
+        symbol, interval=1h, status, applied, open_index, open_candle_start,
+        expected_close, observed_at, anchor_source, anchor_index,
+        anchor_candle_start, anchor_candle_state=CLOSED,
+        effective_previous_close, close_before, close_after, high_before,
+        high_after oraz niezmienność open/low/volume/timestamp."""
+        import copy as _copy
+        from application.controlled_validation import (
+            ControlledValidationConfig,
+            ControlledValidationController,
+            ensure_once_marker,
+        )
+        from application.controlled_validation_cli import PROD_DB
+        from data.yahoo.yahoo_session import FetchResult, OutcomeKind
+
+        class _TwoCandleBoundaryFull:
+            """Recording double externalnej granicy Yahoo z CLOSED+OPEN 1h."""
+            def __init__(self, closed_ts, open_ts):
+                self.closed_ts = closed_ts
+                self.open_ts = open_ts
+                self.discovery_calls = 0
+                self.daily_calls = 0
+                self.intraday_calls = 0
+
+            def paginate_screener(self, size=250):
+                from data.yahoo.yahoo_session import (
+                    ScreenerPage, ScreenerPagination,
+                )
+                self.discovery_calls += 1
+                page = ScreenerPage(total=1, start=0, count=1, quotes=[{
+                    "symbol": RecordingYahooBoundary.SYMBOL,
+                    "quoteType": "EQUITY", "currency": "PLN", "exchange": "WSE",
+                }])
+                return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                                   data=ScreenerPagination(total=1, pages=[page]),
+                                   message=None)
+
+            def fetch_chart(self, symbol, variant="daily"):
+                if variant == "daily":
+                    self.daily_calls += 1
+                    return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA, data={
+                        "variant": "daily", "http_status": 200,
+                        "captured_at": T0.isoformat(),
+                        "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                                 "currency": "PLN", "exchangeName": "WSE"},
+                        "timestamp": [int(self.closed_ts.timestamp())],
+                        "open": [8.25], "high": [8.30], "low": [8.20],
+                        "close": [8.244], "volume": [100.0], "events": {},
+                    }, message=None)
+                if variant == "intraday":
+                    self.intraday_calls += 1
+                    payload = {
+                        "variant": "intraday", "http_status": 200,
+                        "captured_at": T0.isoformat(),
+                        "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                                 "currency": "PLN", "exchangeName": "WSE"},
+                        "timestamp": [int(self.closed_ts.timestamp()),
+                                      int(self.open_ts.timestamp())],
+                        "open": [8.25, 8.24], "high": [8.30, 8.26],
+                        "low": [8.20, 8.22], "close": [8.244, 8.24],
+                        "volume": [100.0, 150.0], "events": {},
+                    }
+                    return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                                       data=payload, message=None)
+                raise AssertionError(f"unknown variant {variant}")
+
+        artifacts = tmp_path / "artifacts"
+        observed = T0 + timedelta(minutes=15)
+        closed_ts = T0 - timedelta(hours=1)
+        open_ts = T0
+        boundary = _TwoCandleBoundaryFull(closed_ts, open_ts)
+        # Trwały Reading 5m close=8.75 w izolowanej bazie — nie może być anchorem.
+        conn = sqlite3.connect(str(controlled_full_db))
+        try:
+            conn.execute(
+                "INSERT INTO instrument_readings "
+                "(reading_id, observation_id, instrument_id, market_data_timestamp, "
+                " scan_timestamp, open, high, low, close, volume, source, "
+                " prev_reading_id, data_completeness, revision_number, "
+                " supersedes_reading_id, timeframe, candle_state) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "rdg_5m_8_75", "obs_aaa", RecordingYahooBoundary.SYMBOL,
+                    _iso(T0 - timedelta(days=2)), _iso(T0),
+                    8.75, 8.75, 8.75, 8.75, 580360.0, "YahooFinance",
+                    None, "COMPLETE", 1, None, "5m", "LEGACY_UNKNOWN",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        cfg = ControlledValidationConfig(
+            isolated_db_path=controlled_full_db,
+            artifacts_dir=artifacts,
+            production_db_path=PROD_DB,
+            allow_network=False,
+            confirm_step7=True,
+        )
+        controller = ControlledValidationController(
+            cfg=cfg, runtime_factory=lambda: None,
+            real_yahoo_session=boundary, clock=_FakeClock([observed]),
+        )
+        ensure_once_marker(artifacts)
+        result = controller.run()
+        assert result["status"] == "COMPLETE_E2E"
+
+        # Trace kontrolny — wymagane pola w stages.controlled_overlay.details.
+        stage = result["trace"]["stages"]["controlled_overlay"]
+        assert stage["status"] == EXECUTED
+        details = stage.get("details", {})
+        assert details["symbol"] == RecordingYahooBoundary.SYMBOL
+        assert details["interval"] == "1h"
+        assert details["status"] == "APPLIED"
+        assert details["applied"] is True
+        assert details["open_index"] == 1
+        assert details["open_candle_start"] == _iso(open_ts)
+        # 7F semantyka: expected_close = czas zamknięcia świecy OPEN 1h,
+        # controlled_close = cena kontrolna = effective_previous_close * 1.04.
+        assert details["expected_close"] == _iso(open_ts + timedelta(hours=1))
+        assert details["controlled_close"] == pytest.approx(8.244 * 1.04)
+        assert details["controlled_close"] == pytest.approx(8.57376)
+        assert details["observed_at"] == _iso(observed)
+        assert details["anchor_source"] == "YAHOO_PREVIOUS_CLOSED_1H"
+        assert details["anchor_index"] == 0
+        assert details["anchor_candle_start"] == _iso(closed_ts)
+        assert details["anchor_candle_state"] == "CLOSED"
+        assert details["effective_previous_close"] == pytest.approx(8.244)
+        assert details["close_before"] == pytest.approx(8.24)
+        assert details["close_after"] == pytest.approx(8.244 * 1.04)
+        assert details["close_after"] == details["controlled_close"]
+        assert details["high_before"] == pytest.approx(8.26)
+        assert details["high_after"] == pytest.approx(max(8.26, 8.244 * 1.04))
+        assert details["open_unchanged"] is True
+        assert details["low_unchanged"] is True
+        assert details["volume_unchanged"] is True
+        assert details["timestamp_unchanged"] is True
+
+        # Dokładnie jeden cykl, żadnego drugiego przebiegu.
+        assert boundary.discovery_calls == 1
+        assert boundary.daily_calls == 1
+        assert boundary.intraday_calls == 1
+        conn = sqlite3.connect(str(controlled_full_db))
+        try:
+            rows = conn.execute("SELECT cycle_id FROM cycles ORDER BY rowid DESC LIMIT 2").fetchall()
+            assert len(rows) == 1
+            # Anchor w bazie == CLOSED 1h (nie 5m): prev_reading_id otwartej 1h
+            # wskazuje Reading CLOSED 1h, nie 5m 8.75.
+            open_reading = conn.execute(
+                "SELECT prev_reading_id, close, timeframe FROM instrument_readings "
+                "WHERE instrument_id=? AND timeframe='1h' AND candle_state='OPEN'",
+                (RecordingYahooBoundary.SYMBOL,),
+            ).fetchone()
+            assert open_reading is not None
+            assert open_reading[1] == pytest.approx(8.244 * 1.04)
+            anchor = conn.execute(
+                "SELECT close, timeframe, candle_state FROM instrument_readings "
+                "WHERE reading_id=?",
+                (open_reading[0],),
+            ).fetchone()
+            assert anchor is not None
+            assert anchor[1] == "1h" and anchor[2] == "CLOSED"
+            assert anchor[0] == pytest.approx(8.244)
+        finally:
+            conn.close()
+
+
 class TestNoOpenHardStop:
     def test_no_open_hard_stop_different_closed(
         self, tmp_path: Path, controlled_full_db: Path
@@ -816,42 +1113,42 @@ class TestNoOpenHardStop:
         values are mandatory so the test cannot pass thanks to an accidentally
         identical fingerprint."""
         from application.controlled_validation import (
-            ControlledValidationConfig,
-            ControlledValidationController,
-            ensure_once_marker,
+           ControlledValidationConfig,
+           ControlledValidationController,
+           ensure_once_marker,
         )
         from application.controlled_validation_cli import PROD_DB
 
         artifacts = tmp_path / "artifacts"
         observed = T0 + timedelta(hours=1, minutes=15)
         boundary = _ClosedOnlyYahooBoundary(
-            intraday_ts=T0 - timedelta(hours=2)
+           intraday_ts=T0 - timedelta(hours=2)
         )
         cfg = ControlledValidationConfig(
-            isolated_db_path=controlled_full_db,
-            artifacts_dir=artifacts,
-            production_db_path=PROD_DB,
-            allow_network=False,
-            confirm_step7=True,
+           isolated_db_path=controlled_full_db,
+           artifacts_dir=artifacts,
+           production_db_path=PROD_DB,
+           allow_network=False,
+           confirm_step7=True,
         )
 
         conn = sqlite3.connect(str(controlled_full_db))
         try:
-            cycles_before = conn.execute("SELECT COUNT(*) FROM cycles").fetchone()[0]
-            readings_before = conn.execute(
-                "SELECT COUNT(*) FROM instrument_readings"
-            ).fetchone()[0]
-            events_before = conn.execute(
-                "SELECT COUNT(*) FROM market_events"
-            ).fetchone()[0]
+           cycles_before = conn.execute("SELECT COUNT(*) FROM cycles").fetchone()[0]
+           readings_before = conn.execute(
+               "SELECT COUNT(*) FROM instrument_readings"
+           ).fetchone()[0]
+           events_before = conn.execute(
+               "SELECT COUNT(*) FROM market_events"
+           ).fetchone()[0]
         finally:
-            conn.close()
+           conn.close()
 
         controller = ControlledValidationController(
-            cfg=cfg,
-            runtime_factory=lambda: None,
-            real_yahoo_session=boundary,
-            clock=_FakeClock([observed]),
+           cfg=cfg,
+           runtime_factory=lambda: None,
+           real_yahoo_session=boundary,
+           clock=_FakeClock([observed]),
         )
         ensure_once_marker(artifacts)
         result = controller.run()
@@ -874,23 +1171,23 @@ class TestNoOpenHardStop:
 
         conn = sqlite3.connect(str(controlled_full_db))
         try:
-            cycles_after = conn.execute("SELECT COUNT(*) FROM cycles").fetchone()[0]
-            readings_after = conn.execute(
-                "SELECT COUNT(*) FROM instrument_readings"
-            ).fetchone()[0]
-            events_after = conn.execute(
-                "SELECT COUNT(*) FROM market_events"
-            ).fetchone()[0]
-            assert cycles_after - cycles_before == 1
-            assert readings_after == readings_before
-            assert events_after == events_before
+           cycles_after = conn.execute("SELECT COUNT(*) FROM cycles").fetchone()[0]
+           readings_after = conn.execute(
+               "SELECT COUNT(*) FROM instrument_readings"
+           ).fetchone()[0]
+           events_after = conn.execute(
+               "SELECT COUNT(*) FROM market_events"
+           ).fetchone()[0]
+           assert cycles_after - cycles_before == 1
+           assert readings_after == readings_before
+           assert events_after == events_before
 
-            rows = conn.execute(
-                "SELECT cycle_id FROM cycles ORDER BY rowid DESC LIMIT 2"
-            ).fetchall()
-            assert len(rows) == 1
+           rows = conn.execute(
+               "SELECT cycle_id FROM cycles ORDER BY rowid DESC LIMIT 2"
+           ).fetchall()
+           assert len(rows) == 1
         finally:
-            conn.close()
+           conn.close()
 
         assert result["trace"]["external_calls"]["openai_attempts"] == 0
         assert result["trace"]["external_calls"]["tavily_attempts"] == 0
@@ -900,5 +1197,5 @@ class TestNoOpenHardStop:
 
         stages = result["trace"]["stages"]
         exec_cycle = [name for name, st in stages.items()
-                      if st.get("status") == EXECUTED and "cycle" in name]
+                     if st.get("status") == EXECUTED and "cycle" in name]
         assert len(exec_cycle) == 1

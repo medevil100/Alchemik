@@ -354,6 +354,7 @@ class CycleTraceRecorder:
         rejected_count: Optional[int] = None,
         skipped_count: Optional[int] = None,
         error_count: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
     ) -> None:
         stage = self.trace["stages"].get(name)
         if stage is None:
@@ -367,6 +368,11 @@ class CycleTraceRecorder:
             stage["duration_ms"] = max(0, int((self._now_timestamp() - start_ts) * 1000))
         if reason is not None:
             stage["reason"] = reason
+        if details is not None:
+            # Jawny, bezpieczny słownik szczegółów etapu (np. kontrolowany
+            # overlay). Wartości są redagowane centralnie przez sanitize_trace
+            # przed dołączeniem śladu do CycleReport.
+            stage["details"] = details
         for field, value in (
             ("input_count", input_count),
             ("output_count", output_count),

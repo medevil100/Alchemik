@@ -405,9 +405,102 @@ class ControlledYahooSession:
                         open_idx = i
                         break
                 if open_idx is not None:
-                    raw = copy.deepcopy(raw)
-                    raw.data = self.overlay_open_at(data, open_idx, self.previous_close)
-                    self.overlay_applied = True
+                    # Anchor overlayu WYŁĄCZNIE z payloadu intraday 1h i tego
+                    # samego request-scoped observed_at: najbliższa wcześniejsza
+                    # chronologicznie CLOSED 1h. effective_previous_close = close
+                    # tej CLOSED 1h. Readingi 5m, meta Yahoo, wartości przekazane
+                    # przez select_symbol ani najstarszy wiersz NIE są źródłem
+                    # anchoru (brak fallbacku między timeframe).
+                    open_candle_start = datetime.fromtimestamp(
+                        float(ts_list[open_idx]), tz=timezone.utc
+                    )
+                    anchor_idx = None
+                    anchor_candle_start = None
+                    for i in range(len(ts_list)):
+                        try:
+                            cs = datetime.fromtimestamp(
+                                float(ts_list[i]), tz=timezone.utc
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                        # CLOSED 1h: świeca zakończona przed observed_at
+                        # i rozpoczęta przed otwartą świecą.
+                        if cs >= open_candle_start:
+                            continue
+                        if cs + timedelta(hours=1) <= observed_at:
+                            if (
+                                anchor_idx is None
+                                or anchor_candle_start is None
+                                or cs > anchor_candle_start
+                            ):
+                                anchor_idx = i
+                                anchor_candle_start = cs
+                    if anchor_idx is None:
+                        # Twardy naturalny stop: brak wcześniejszej CLOSED 1h
+                        # w payloadzie. Nie wykonujemy overlayu i nie modyfikujemy
+                        # surowego payloadu.
+                        self.overlay_applied = False
+                        self.overlay_state = {
+                            "symbol": symbol,
+                            "interval": "1h",
+                            "status": "NO_PREVIOUS_CLOSED_1H_ANCHOR",
+                            "applied": False,
+                            "observed_at": observed_at.isoformat(),
+                            "open_index": open_idx,
+                            "open_candle_start": open_candle_start.isoformat(),
+                            "raw_preserved": True,
+                        }
+                        from data.yahoo.yahoo_session import OutcomeKind
+                        raw = replace(
+                            raw, kind=OutcomeKind.SUCCESS_NO_DATA, data=None
+                        )
+                    else:
+                        effective_previous_close = float(data["close"][anchor_idx])
+                        expected_close = round(
+                            effective_previous_close
+                            * ControlledYahooSession.OVERLAY_MULTIPLIER,
+                            8,
+                        )
+                        real_close = float(data["close"][open_idx])
+                        real_high = float(data["high"][open_idx])
+                        raw = copy.deepcopy(raw)
+                        raw.data = self.overlay_open_at(
+                            data, open_idx, effective_previous_close
+                        )
+                        self.overlay_applied = True
+                        self.overlay_state = {
+                            "symbol": symbol,
+                            "interval": "1h",
+                            "status": "APPLIED",
+                            "applied": True,
+                            "open_index": open_idx,
+                            "open_candle_start": open_candle_start.isoformat(),
+                            # Semantyka 7F: expected_close = czas zamknięcia
+                            # świecy OPEN 1h (ISO), controlled_close = cena
+                            # kontrolna wyliczona przez overlay.
+                            "expected_close": (
+                                open_candle_start + timedelta(hours=1)
+                            ).isoformat(),
+                            "controlled_close": expected_close,
+                            "observed_at": observed_at.isoformat(),
+                            "anchor_source": "YAHOO_PREVIOUS_CLOSED_1H",
+                            "anchor_index": anchor_idx,
+                            "anchor_candle_start": (
+                                anchor_candle_start.isoformat()
+                                if anchor_candle_start is not None
+                                else None
+                            ),
+                            "anchor_candle_state": "CLOSED",
+                            "effective_previous_close": effective_previous_close,
+                            "close_before": real_close,
+                            "close_after": expected_close,
+                            "high_before": real_high,
+                            "high_after": max(real_high, expected_close),
+                            "open_unchanged": True,
+                            "low_unchanged": True,
+                            "volume_unchanged": True,
+                            "timestamp_unchanged": True,
+                        }
                 else:
                     # Twardy naturalny stop: brak OPEN. Nie modyfikujemy surowego
                     # payloadu (zachowany w overlay_state); zwracamy SUCCESS_NO_DATA,
@@ -651,11 +744,9 @@ class ControlledValidationController:
             # swiecy 1h (ControlledYahooSession zwrocil SUCCESS_NO_DATA i ustawil
             # overlay_state.status == NO_OPEN_CANDIDATE). Konczymy bez drugiego
             # cyklu, fetchu i etapu domenowego.
-            if (
-                getattr(controlled_session, "overlay_state", None)
-                and controlled_session.overlay_state.get("status")
-                == "NO_OPEN_CANDIDATE"
-            ):
+            overlay_state = getattr(controlled_session, "overlay_state", None) or {}
+            overlay_status = overlay_state.get("status")
+            if overlay_status == "NO_OPEN_CANDIDATE":
                 recorder.stage_end("daily", NATURAL_PIPELINE_STOP)
                 recorder.stage_end("intraday", NATURAL_PIPELINE_STOP)
                 recorder.stage_end("controlled_overlay", NATURAL_PIPELINE_STOP)
@@ -667,9 +758,23 @@ class ControlledValidationController:
                     reason="overlay_status=NO_OPEN_CANDIDATE",
                 )
                 return self._finish(recorder, "NO_NATURAL_E2E_CANDIDATE")
+            if overlay_status == "NO_PREVIOUS_CLOSED_1H_ANCHOR":
+                recorder.stage_end("daily", NATURAL_PIPELINE_STOP)
+                recorder.stage_end("intraday", NATURAL_PIPELINE_STOP)
+                recorder.stage_end("controlled_overlay", NATURAL_PIPELINE_STOP,
+                                   details=overlay_state)
+                recorder.stage_end("chart_validation", NATURAL_PIPELINE_STOP)
+                recorder.stage_end("reading_persistence", NATURAL_PIPELINE_STOP)
+                recorder.stage_end("cycle_persistence", EXECUTED)
+                recorder.stage_end(
+                    "final_database_check", EXECUTED,
+                    reason="overlay_status=NO_PREVIOUS_CLOSED_1H_ANCHOR",
+                )
+                return self._finish(recorder, "NO_NATURAL_E2E_CANDIDATE")
             recorder.stage_end("daily", EXECUTED)
             recorder.stage_end("intraday", EXECUTED)
-            recorder.stage_end("controlled_overlay", EXECUTED)
+            recorder.stage_end("controlled_overlay", EXECUTED,
+                               details=overlay_state)
             recorder.stage_end("chart_validation", EXECUTED)
             recorder.stage_end("cycle_persistence", EXECUTED)
             recorder.stage_end(
