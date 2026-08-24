@@ -50,7 +50,8 @@ export type ApiError = ApiNetworkError | ApiTimeoutError | ApiHttpError | ApiVal
 // ---------------------------------------------------------------------------
 
 function buildUrl(path: string, params?: Record<string, string | number | undefined>): string {
-  const base = API_CONFIG.BASE_URL;
+  // KROK 8.4B — /health jest osobną trasą backendu (bez prefiksu /api/v1).
+  const base = path === '/health' ? '' : API_CONFIG.BASE_URL;
   let url = base ? `${base}${path}` : path;
 
   if (params) {

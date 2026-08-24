@@ -135,6 +135,7 @@ Krok 8 jest planowany etapami. Dla każdego etapu podano: cel, warunek wejścia,
 - **Cel:** udostępnienie lokalnego backendu API (read-only względem osobnej kopii bazy) oraz dashboardu (frontend) do podglądu cykli, śladów i zdarzeń — bez zapisu do bazy produkcyjnej.
 - **Warunek wejścia:** Etap 8.3 zamknięty; osobna kopia bazy zawiera dane z realnych cykli; interfejs API zdefiniowany i zatwierdzony; dashboard działa lokalnie.
 - **Dowód zakończenia:** lokalny backend odpowiada na endpointy read-only; dashboard renderuje dane z osobnej kopii; testy API przechodzą; brak zapisów do bazy produkcyjnej (metryki pliku bez zmian); dokumentacja API zaktualizowana.
+- **Realizacja Kroku 8.4B (same-origin proxy):** frontend używa wyłącznie względnego prefiksu `/api/v1` i osobnej trasy `/health`; lokalny Vite `server.proxy` oraz `preview.proxy` przekazują `/api` oraz `/health` do lokalnego FastAPI **bez rewrite** (backend otrzymuje pełne `/api/v1/...`); target proxy pochodzi z niesekretnej zmiennej `ALCHEMIK_API_PROXY_TARGET` (domyślnie `http://127.0.0.1:8000`) i nie trafia do produkcyjnego bundle; produkcyjnie `/api` zostanie obsłużone przez Nginx; backend pozostaje bez CORS; żaden adres localhost nie jest zaszyty w produkcyjnym bundle.
 - **Rollback:** zatrzymanie lokalnego backendu/dashboardu; przywrócenie wcześniejszej wersji bez wpływu na bazę i scheduler.
 - **Zakazy:** zakaz endpointów zapisujących do bazy produkcyjnej; zakaz udostępniania sekretów przez API; zakaz wdrożenia backendu poza lokalną maszyną przed Etapem 8.5; zakaz `git push`.
 
