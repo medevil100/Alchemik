@@ -542,6 +542,30 @@ Uzupełnienie decyzji właściciela z 2026-08-21 — separacja timeframe i statu
 
 ---
 
+## Incydent proceduralny 2026-08-24 — audyt produkcyjnej SQLite
+
+### Fakty
+
+- Podczas audytu przebiegu 7F wykonano read-only połączenie SQLite
+  (`sqlite3.connect(... mode=ro`) do produkcyjnej bazy, wyłącznie w celu
+  odczytu liczników.
+- SQLite utworzył sidecary `alchemik_runtime.db-wal` (pusty, 0 B) oraz
+  `alchemik_runtime.db-shm` (32 768 B) przy produkcyjnej bazie.
+- Sidecary usunięto po zakończeniu audytu.
+- Główny plik bazy pozostał bitowo identyczny (rozmiar i SHA256 bez zmian).
+- Brak dowodu utraty danych, jednak naruszono procedurę kontroli bazy.
+
+### Zamrożona reguła
+
+- Produkcyjną bazę kontrolujemy wyłącznie metrykami pliku:
+  `Get-Item`, `Get-FileHash`, `Test-Path` (rozmiar, SHA256, brak WAL/SHM).
+- Wszystkie zapytania SQLite, `PRAGMA`, `integrity_check`, `foreign_key_check`
+  i liczniki wykonujemy wyłącznie na świeżej bitowej kopii poza repozytorium.
+- Bezwzględny zakaz otwierania produkcyjnej bazy przez `sqlite3`, repository,
+  `PRAGMA` lub jakikolwiek connection string.
+
+---
+
 ## KONIEC DOKUMENTU
 
 Data utworzenia: 08.08.2026

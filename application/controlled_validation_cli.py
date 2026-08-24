@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
+import os
 import sys
 from pathlib import Path
+import tempfile
 
 # Ensure project root is on sys.path (jak w application/entrypoint.py).
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +50,46 @@ from application.controlled_validation import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROD_DB = PROJECT_ROOT / "data" / "runtime" / "alchemik_runtime.db"
+
+TRACE_ARTIFACT_NAME = "controlled_validation_trace.json"
+
+
+def write_controlled_trace_json(result: dict, artifacts_dir: Path) -> Path:
+    """Jeden jawny, atomowy zapis finalnego sanitizowanego wyniku kontrolera.
+
+    Zapisuje ``<artifacts-dir>/controlled_validation_trace.json`` w UTF-8 po
+    pojedynczym controller.run(). Przed zapisem trace jest redagowany przez
+    centralny ``sanitize_trace`` (żadnej drugiej logiki redakcji). Plik nie
+    zawiera sekretów, środowiska procesu ani konfiguracji klientów — zapis
+    obejmuje wyłącznie status i sanitizowany trace wyniku kontrolera.
+    """
+    artifacts_dir = Path(artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # Lazy import: CLI musi pozostać wolne od importów aplikacji przed
+    # sprawdzeniem flag (no-flags-no-effects). sanitize_trace jest centralną
+    # redakcją z application.cycle_trace.
+    from application.cycle_trace import sanitize_trace
+    trace = sanitize_trace(copy.deepcopy(result.get("trace") or {}))
+    payload = {
+        "status": result.get("status"),
+        "trace": trace,
+    }
+    target = artifacts_dir / TRACE_ARTIFACT_NAME
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{TRACE_ARTIFACT_NAME}.",
+        suffix=".tmp",
+        dir=str(artifacts_dir),
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp_name, str(target))
+    finally:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+    return target
 
 
 def _build_runtime_guarded(
@@ -174,6 +217,10 @@ def main(argv=None) -> int:
         real_yahoo_session=real_session,
     )
     result = controller.run()
+
+    # Krok 7G: trwały eksport kontrolowanego trace — dokładnie jeden zapis
+    # po pojedynczym run(), bez ponownego cyklu i bez sekretów.
+    write_controlled_trace_json(result, args.artifacts_dir)
 
     print(f"STATUS: {result.get('status')}")
     print(f"TRACE overall: {result.get('trace', {}).get('overall_status')}")

@@ -730,6 +730,67 @@ class TestControlledOverlayOpen1h:
 
 
 
+class _TwoCandleBoundaryFull:
+    """Recording double externalnej granicy Yahoo z CLOSED 1h + OPEN 1h.
+
+    Deterministic APPLIED overlay: daily close=8.244, intraday CLOSED 1h
+    (closed_ts) close=8.244 + OPEN 1h (open_ts) close=8.24. Obserwacja musi
+    być po starcie OPEN, aby cykl zakwalifikował się jako COMPLETE_E2E.
+    """
+
+    SYMBOL = RecordingYahooBoundary.SYMBOL
+
+    def __init__(self, closed_ts, open_ts):
+        self.closed_ts = closed_ts
+        self.open_ts = open_ts
+        self.discovery_calls = 0
+        self.daily_calls = 0
+        self.intraday_calls = 0
+
+    def paginate_screener(self, size=250):
+        from data.yahoo.yahoo_session import (
+            FetchResult, OutcomeKind, ScreenerPage, ScreenerPagination,
+        )
+        self.discovery_calls += 1
+        page = ScreenerPage(total=1, start=0, count=1, quotes=[{
+            "symbol": self.SYMBOL,
+            "quoteType": "EQUITY", "currency": "PLN", "exchange": "WSE",
+        }])
+        return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                           data=ScreenerPagination(total=1, pages=[page]),
+                           message=None)
+
+    def fetch_chart(self, symbol, variant="daily"):
+        from data.yahoo.yahoo_session import FetchResult, OutcomeKind
+        if variant == "daily":
+            self.daily_calls += 1
+            return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA, data={
+                "variant": "daily", "http_status": 200,
+                "captured_at": T0.isoformat(),
+                "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                         "currency": "PLN", "exchangeName": "WSE"},
+                "timestamp": [int(self.closed_ts.timestamp())],
+                "open": [8.25], "high": [8.30], "low": [8.20],
+                "close": [8.244], "volume": [100.0], "events": {},
+            }, message=None)
+        if variant == "intraday":
+            self.intraday_calls += 1
+            payload = {
+                "variant": "intraday", "http_status": 200,
+                "captured_at": T0.isoformat(),
+                "meta": {"symbol": symbol, "instrumentType": "EQUITY",
+                         "currency": "PLN", "exchangeName": "WSE"},
+                "timestamp": [int(self.closed_ts.timestamp()),
+                              int(self.open_ts.timestamp())],
+                "open": [8.25, 8.24], "high": [8.30, 8.26],
+                "low": [8.20, 8.22], "close": [8.244, 8.24],
+                "volume": [100.0, 150.0], "events": {},
+            }
+            return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
+                               data=payload, message=None)
+        raise AssertionError(f"unknown variant {variant}")
+
+
 class _ClosedOnlyYahooBoundary:
     """Recording double of the external Yahoo boundary.
 
@@ -947,57 +1008,6 @@ class TestOverlayAnchorClosed1h:
         from application.controlled_validation_cli import PROD_DB
         from data.yahoo.yahoo_session import FetchResult, OutcomeKind
 
-        class _TwoCandleBoundaryFull:
-            """Recording double externalnej granicy Yahoo z CLOSED+OPEN 1h."""
-            def __init__(self, closed_ts, open_ts):
-                self.closed_ts = closed_ts
-                self.open_ts = open_ts
-                self.discovery_calls = 0
-                self.daily_calls = 0
-                self.intraday_calls = 0
-
-            def paginate_screener(self, size=250):
-                from data.yahoo.yahoo_session import (
-                    ScreenerPage, ScreenerPagination,
-                )
-                self.discovery_calls += 1
-                page = ScreenerPage(total=1, start=0, count=1, quotes=[{
-                    "symbol": RecordingYahooBoundary.SYMBOL,
-                    "quoteType": "EQUITY", "currency": "PLN", "exchange": "WSE",
-                }])
-                return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
-                                   data=ScreenerPagination(total=1, pages=[page]),
-                                   message=None)
-
-            def fetch_chart(self, symbol, variant="daily"):
-                if variant == "daily":
-                    self.daily_calls += 1
-                    return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA, data={
-                        "variant": "daily", "http_status": 200,
-                        "captured_at": T0.isoformat(),
-                        "meta": {"symbol": symbol, "instrumentType": "EQUITY",
-                                 "currency": "PLN", "exchangeName": "WSE"},
-                        "timestamp": [int(self.closed_ts.timestamp())],
-                        "open": [8.25], "high": [8.30], "low": [8.20],
-                        "close": [8.244], "volume": [100.0], "events": {},
-                    }, message=None)
-                if variant == "intraday":
-                    self.intraday_calls += 1
-                    payload = {
-                        "variant": "intraday", "http_status": 200,
-                        "captured_at": T0.isoformat(),
-                        "meta": {"symbol": symbol, "instrumentType": "EQUITY",
-                                 "currency": "PLN", "exchangeName": "WSE"},
-                        "timestamp": [int(self.closed_ts.timestamp()),
-                                      int(self.open_ts.timestamp())],
-                        "open": [8.25, 8.24], "high": [8.30, 8.26],
-                        "low": [8.20, 8.22], "close": [8.244, 8.24],
-                        "volume": [100.0, 150.0], "events": {},
-                    }
-                    return FetchResult(kind=OutcomeKind.SUCCESS_WITH_DATA,
-                                       data=payload, message=None)
-                raise AssertionError(f"unknown variant {variant}")
-
         artifacts = tmp_path / "artifacts"
         observed = T0 + timedelta(minutes=15)
         closed_ts = T0 - timedelta(hours=1)
@@ -1097,6 +1107,119 @@ class TestOverlayAnchorClosed1h:
             assert anchor[0] == pytest.approx(8.244)
         finally:
             conn.close()
+
+
+class TestControlledTraceJsonExport:
+    """Trwały eksport kontrolowanego trace do artefaktu (Krok 7G/7H).
+
+    Po pojedynczym przebiegu kontrolera CLI musi utworzyć
+    ``<artifacts-dir>/controlled_validation_trace.json`` zawierający
+    finalny sanitized wynik kontrolera, w tym
+    ``stages.controlled_overlay.details`` z pełnym zestawem pól 7F.
+    Plik nie może zawierać wartości sekretów.
+    """
+
+    @staticmethod
+    def _normalized_secret_fingerprints(payload: dict):
+        """Stałe know-bad fingerprints testowe (nie prawdziwe sekrety)."""
+        secrets = [
+            "sk-test-0000000000000000",
+            "sk-11111111111111111111",
+            "123456:AAbbCCddEEffGGhhIIjjKKll",
+            "your-chat-id",
+        ]
+        return [s for s in secrets if s in json.dumps(payload)]
+
+    def _run_controller_once(self, tmp_path, controlled_full_db, boundary, observed):
+        from application.controlled_validation import (
+            ControlledValidationConfig,
+            ControlledValidationController,
+            ensure_once_marker,
+        )
+        from application.controlled_validation_cli import PROD_DB
+
+        artifacts = tmp_path / "artifacts"
+        cfg = ControlledValidationConfig(
+            isolated_db_path=controlled_full_db,
+            artifacts_dir=artifacts,
+            production_db_path=PROD_DB,
+            allow_network=False,
+            confirm_step7=True,
+        )
+        controller = ControlledValidationController(
+            cfg=cfg, runtime_factory=lambda: None,
+            real_yahoo_session=boundary, clock=_FakeClock([observed]),
+        )
+        # Marker przed pierwszym requestem — jak w CLI main().
+        ensure_once_marker(artifacts)
+        result = controller.run()
+
+        # Krok 7G: pojedynczy zapis trace do artefaktów przez publiczną funkcję
+        # CLI (RED: funkcja nie istnieje przed implementacją).
+        from application.controlled_validation_cli import write_controlled_trace_json
+        write_controlled_trace_json(result, artifacts)
+        return result, artifacts
+
+    @pytest.mark.parametrize("variant", ["applied", "natural_stop"])
+    def test_trace_json_written_after_single_run(
+        self, tmp_path: Path, controlled_full_db: Path, variant: str
+    ):
+        """Po pojedynczym run() kontrolera (dla APPLIED oraz NO_OPEN_CANDIDATE
+        naturalnego stopu) istnieje plik controlled_validation_trace.json
+        z finalnym sanitized wynikiem."""
+        if variant == "applied":
+            observed = T0 + timedelta(minutes=15)
+            closed_ts = T0 - timedelta(hours=1)
+            open_ts = T0
+            boundary = _TwoCandleBoundaryFull(closed_ts, open_ts)
+        else:
+            observed = T0 + timedelta(hours=1, minutes=15)
+            boundary = _ClosedOnlyYahooBoundary(
+                intraday_ts=T0 - timedelta(hours=2)
+            )
+
+        result, artifacts = self._run_controller_once(
+            tmp_path, controlled_full_db, boundary, observed
+        )
+        if variant == "applied":
+            assert result["status"] == "COMPLETE_E2E"
+        else:
+            assert result["status"] == "NO_NATURAL_E2E_CANDIDATE"
+
+        # W tym teście RED wymagamy pliku artefaktu (przed implementacją
+        # zapisu trace przez CLI plik NIE istnieje — to punkt RED).
+        trace_path = artifacts / "controlled_validation_trace.json"
+        assert trace_path.exists(), (
+            "CLI/main musi wyeksportować controlled_validation_trace.json "
+            "do katalogu artefaktów po pojedynczym run()"
+        )
+        data = json.loads(trace_path.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        # Finalny wyniki kontrolera - status i trace.
+        assert data["status"] == result["status"]
+        assert data["trace"]["overall_status"] == result["trace"]["overall_status"]
+
+        # Krok 7G: dla APPLIED plik trace musi zawierać pola overlayu 7F.
+        # Dla naturalnego stopu (NO_OPEN_CANDIDATE) nie istnieją — weryfikujemy
+        # wyłącznie utworzenie pliku, status i brak sekretów.
+        if variant == "applied":
+            stage = data["trace"]["stages"]["controlled_overlay"]
+            details = stage.get("details", {})
+            for key in (
+                "symbol", "interval", "status", "applied",
+                "anchor_source", "effective_previous_close",
+                "expected_close", "controlled_close",
+                "close_before", "close_after", "high_before", "high_after",
+            ):
+                assert key in details
+            assert data["status"] == "COMPLETE_E2E"
+
+        # Brak sekretów: know-bad fingerprints NIE występują w żadnym polu.
+        # "telegram"/"chat_id" to nazwy pól liczników w trace, nie wartości
+        # sekretów — weryfikujemy wyłącznie wzorce wartości sekretów.
+        payload_str = json.dumps(data)
+        for secret in ("sk-", "tvly-", "your-chat-id", "123456:AAbbCCddEEffGG"):
+            assert secret not in payload_str
 
 
 class TestNoOpenHardStop:
