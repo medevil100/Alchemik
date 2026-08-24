@@ -12,6 +12,7 @@ Note: Requires environment variables for secrets (OpenAI API key, Telegram token
 """
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from application.runtime import RuntimeService
+from application.scheduler import RuntimeScheduler
 from application.market_scanner import MarketScanner
 from application.universe import PennyStockUniverse
 from application.alert_dispatcher import AlertDispatcher
@@ -236,6 +238,29 @@ def build_runtime_service(
     return runtime
 
 
+def _run_scheduler(runtime: RuntimeService) -> None:
+    """Blokujacy tryb --scheduler: petla 15 minut z przerwalnym oczekiwaniem.
+
+    Scheduler nie otrzymuje i nie przejmuje CycleLock — wylaczna wlasnosc
+    przejecia/zwolnienia pozostaje w RuntimeService.run_cycle()
+    (dekorator _cycle_lock_guard). Scheduler mapuje CycleAlreadyRunningError
+    na SKIPPED_OVERLAP. SIGTERM i KeyboardInterrupt wykonuja graceful stop
+    bez uruchamiania kolejnego cyklu.
+    """
+    scheduler = RuntimeScheduler(
+        runtime_service=runtime,
+        interval=900,
+        continue_on_error=True,
+    )
+    signal.signal(signal.SIGTERM, lambda signum, frame: scheduler.stop())
+    try:
+        scheduler.run_forever()
+    except KeyboardInterrupt:
+        logger.info("ALCHEMIK scheduler stopped by interrupt")
+    finally:
+        scheduler.stop()
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -249,6 +274,9 @@ def main():
     # entrypoincie. Testy używające build_runtime_service() bez tej flagi
     # zachowują niezmienione istniejące zachowanie run_cycle().
     runtime.production_matrix_cycle = True
+    if "--scheduler" in sys.argv[1:]:
+        _run_scheduler(runtime)
+        return
     report = runtime.run_cycle()
 
     logger.info("Cycle complete: %d candidates, %d success, %d errors",

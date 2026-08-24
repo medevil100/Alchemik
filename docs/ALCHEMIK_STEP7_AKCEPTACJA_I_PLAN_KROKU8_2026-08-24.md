@@ -118,6 +118,18 @@ Krok 8 jest planowany etapami. Dla każdego etapu podano: cel, warunek wejścia,
 - **Rollback:** zatrzymanie schedulera; przywrócenie poprzedniej konfiguracji z backupu; brak zmian w produkcyjnej bazie.
 - **Zakazy:** zakaz uruchamiania schedulera bez CycleLock; zakaz zapisu do produkcyjnej bazy przed Etapem 8.2; zakaz wysyłki Telegrama bez naturalnych bramek; zakaz pracy na bazie produkcyjnej bez kopii.
 
+**Zatwierdzona realizacja schedulera 15 minut (po decyzji właściciela z 2026-08-24, korekta kontraktu po `STOP_STEP8_3_CYCLELOCK_CONTRACT_GAP`):**
+
+- **Podział odpowiedzialności:** `RuntimeService.run_cycle()` pozostaje jedynym właścicielem przejęcia i zwolnienia `CycleLock` (dekorator `_cycle_lock_guard`). Scheduler nie otrzymuje i nie przejmuje `CycleLock`. Scheduler wywołuje wyłącznie publiczne, już chronione `run_cycle()`.
+- **Pierwszy cykl:** wykonywany natychmiast po uruchomieniu schedulera (przed pierwszym oczekiwaniem).
+- **Interwał produkcyjny:** dokładnie 900 sekund (15 minut); kolejne próby rozpoczynają się dopiero 900 sekund po zakończeniu poprzedniej próby; oczekiwanie jest przerwalne (`_stop_event.wait(900)`), bez `time.sleep(900)`.
+- **Zajęty CycleLock:** chronione `run_cycle()` zgłasza `CycleAlreadyRunningError`; scheduler mapuje go na jawny status `SKIPPED_OVERLAP`; `run_cycle()` nie jest wywoływane ponownie przed upływem oczekiwania; brak kolejki, retry, catch-up i nadrabiania pominiętych cykli.
+- **Sukces:** jawny status `EXECUTED`; blokada jest zwalniana przez `_cycle_lock_guard` w `finally` (także po wyjątku).
+- **Błąd cyklu:** pojedynczy błąd nie kończy całej usługi; scheduler rejestruje go bez sekretów (status `CYCLE_ERROR` przy `continue_on_error=True`) i przechodzi do oczekiwania 900 sekund; brak natychmiastowego retry.
+- **Brak równoległości:** maksymalnie jeden aktywny `RuntimeService.run_cycle()` — gwarancja przez istniejący `_cycle_lock_guard` na `run_cycle()` (nie przez scheduler).
+- **Graceful stop:** `stop()` ustawia zdarzenie; zatrzymanie podczas oczekiwania kończy pętlę bez uruchamiania kolejnego cyklu; `SIGTERM` oraz `KeyboardInterrupt` wywołują `scheduler.stop()`.
+- **Uruchomienie:** jawne przez `python -m application.entrypoint --scheduler` (tryb blokujący, proces nie kończy się po utworzeniu wątku). Uruchomienie bez flagi `--scheduler` zachowuje dotychczasową semantykę pojedynczego cyklu.
+
 ### Etap 8.4 — Lokalny backend API i dashboard na osobnej kopii bazy
 
 - **Cel:** udostępnienie lokalnego backendu API (read-only względem osobnej kopii bazy) oraz dashboardu (frontend) do podglądu cykli, śladów i zdarzeń — bez zapisu do bazy produkcyjnej.
