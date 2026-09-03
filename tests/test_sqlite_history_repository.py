@@ -345,6 +345,9 @@ class TestSQLiteHistoryRepository(unittest.TestCase):
         self.assertEqual(summary["event_count"], 0)
         self.assertEqual(summary["journal_mode"], "wal")
         self.assertEqual(summary["schema_version"], 2)
+        self.assertIn("db_path", summary, "Key 'db_path' must be present in storage summary")
+        self.assertIsInstance(summary["db_path"], str, "db_path must be a string")
+        self.assertEqual(summary["db_path"], str(self.repo.db_path), "db_path must match repo db_path")
 
         # With data
         self.repo.save_cycle(self.cycle_id, self.cycle_data)

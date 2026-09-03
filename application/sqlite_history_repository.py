@@ -3010,7 +3010,7 @@ class SQLiteHistoryRepository:
         Return a summary of stored data.
 
         Returns:
-            Dict with cycle_count, event_count, db_path, wal_mode.
+            Dict with cycle_count, event_count, db_path, journal_mode, schema_version.
         """
         conn = sqlite3.connect(str(self.db_path))
         try:
@@ -3028,6 +3028,7 @@ class SQLiteHistoryRepository:
             return {
                 "cycle_count": cycle_count,
                 "event_count": event_count,
+                "db_path": str(self.db_path),
                 "journal_mode": journal_mode,
                 "schema_version": self.SCHEMA_VERSION,
             }
